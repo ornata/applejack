@@ -128,7 +128,7 @@ int main(void) {
   IOHIDManagerRef mgr =
       IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
   if (!mgr) {
-    printf("error: Couldn't create IOHIDManager; bailing.");
+    printf("error: Couldn't create IOHIDManager; bailing.\n");
     return 1;
   }
 
