@@ -70,7 +70,8 @@ int main(void) {
 
   CFNumberRef vidNum =
       CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
-  assert(vidNum && "couldn't create vidNum?!"); // throwaway tool; assert is fine.
+  assert(vidNum &&
+         "couldn't create vidNum?!"); // throwaway tool; assert is fine.
   CFNumberRef pidNum =
       CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
   assert(pidNum && "couldn't create pidNum?!");
