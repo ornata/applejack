@@ -39,13 +39,18 @@ static void on_report(void *context, IOReturn result, void *sender,
   // int. This lets us figure out how the OS interprets the device.
   //
   // If it's 0, we have a keyboard. If it's 1, we have a mouse.
+  // We expect a mouse.
   int iface2int = -1;
   if (!CFNumberGetValue(iface, kCFNumberIntType, &iface2int)) {
     printf("Couldn't convert interface number to an int; giving up\n");
     return;
   }
-  // We know this is recognized as a mouse, but let's document it.
-  assert(iface2int == 1 && "expected a mouse?!");
+
+  if (iface2int != 1) {
+    printf("Expected a mouse; giving up\n");
+    return;
+  }
+
   printf("Interface number: %d, hex: ", iface2int);
 
   // Now, print out the raw bytes that were sent by the device.
