@@ -44,6 +44,8 @@ static void on_report(void *context, IOReturn result, void *sender,
     printf("Couldn't convert interface number to an int; giving up\n");
     return;
   }
+  // We know this is recognized as a mouse, but let's document it.
+  assert(iface2int == 1 && "expected a mouse?!");
   printf("Interface number: %d, hex: ", iface2int);
 
   // Now, print out the raw bytes that were sent by the device.
