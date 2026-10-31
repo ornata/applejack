@@ -2,7 +2,51 @@
 #include <IOKit/hid/IOHIDKeys.h> // kIOHIDVendorIDKey, kIOHIDProductIDKey, ...
 #include <IOKit/hid/IOHIDManager.h> // manager, matching, callbacks
 #include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
+
+/// Represents the gamepad state as collected from the adapter.
+typedef struct gamepad_state {
+  int32_t x, y;    // accumulated trackball motion
+  uint32_t other;  // count of "unknown button" events
+  uint8_t buttons; // bit0 = left trigger, bit1 = right trigger, bit2 = unused
+} gamepad_state;
+
+/// Returns true if a and b are the same gamepad state, false otherwise.
+static bool equal_state(gamepad_state a, gamepad_state b) {
+  return a.x == b.x && a.y == b.y && a.other == b.other &&
+         a.buttons == b.buttons;
+}
+
+/// Decodes what happened with the gamepad when a button was pressed, the
+/// trackball was moved, etc. The updated state is returned in \p outState.
+/// Returns true on success, false otherwise.
+static bool pad_decode(gamepad_state prevState, const uint8_t *report,
+                       CFIndex reportLength, gamepad_state *outState) {
+  // Only accept a mouse-sized report.
+  if (reportLength != 3)
+    return false;
+  // Mask out which buttons came through via 0b00..0111
+  uint8_t buttons = report[0] & 0x07;
+  int8_t dx = (int8_t)report[1]; // change in x
+  int8_t dy = (int8_t)report[2]; // change in y
+  outState->buttons = buttons;
+  outState->other = prevState.other; // pick up where we left off for other
+  // Saturate on overflow when updating trackball position.
+  // Probably never happens, but let's avoid UB.
+  if (__builtin_add_overflow(prevState.x, dx, &outState->x))
+    outState->x = (dx > 0) ? INT32_MAX : INT32_MIN;
+  if (__builtin_add_overflow(prevState.y, dy, &outState->y))
+    outState->y = (dy > 0) ? INT32_MAX : INT32_MIN;
+  // If we have no buttons and no movement, then either we pressed something we
+  // don't handle, or we released something. If previously no trigger was held
+  // before, we assume the previous state was a release. Therefore, in that
+  // case, this must be an unknown/other press.
+  if (buttons == 0 && dx == 0 && dy == 0 && prevState.buttons == 0)
+    outState->other += 1;
+  return true;
+}
 
 /// Callback that runs every time we get an input report from the attached
 /// device. Used as a probe to check what happens when you press buttons etc.
@@ -13,7 +57,6 @@
 static void on_report(void *context, IOReturn result, void *sender,
                       IOHIDReportType type, uint32_t reportID, uint8_t *report,
                       CFIndex reportLength) {
-  (void)context;
   (void)type;
   (void)reportID;
 
@@ -57,7 +100,21 @@ static void on_report(void *context, IOReturn result, void *sender,
   for (CFIndex i = 0; i < reportLength; ++i) {
     printf("%02x ", report[i]);
   }
+
+  // Check for updated gamepad state and report it if anything changed.
   printf("\n");
+  gamepad_state *state = context;
+  assert(state && "expected a gamepad state in the context?!");
+  gamepad_state old = *state;
+  if (!pad_decode(old, report, reportLength, state))
+    return;
+
+  if (equal_state(old, *state))
+    return;
+
+  // We updated the gamepad state. Print the updated state.
+  printf("gamepad state: x = %d, y = %d, other = %u, buttons = %d\n", state->x,
+         state->y, state->other, state->buttons);
 }
 
 int main(void) {
@@ -93,8 +150,12 @@ int main(void) {
   CFRelease(pidNum);
   CFRelease(match);
 
+  // Initialize the gamepad state and pass it along in the context, so it's
+  // registered for every callback.
+  gamepad_state state = {0};
+
   // Register a probe callback.
-  IOHIDManagerRegisterInputReportCallback(mgr, on_report, /*context =*/NULL);
+  IOHIDManagerRegisterInputReportCallback(mgr, on_report, /*context =*/&state);
 
   // Attach it to this thread's run loop.
   IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(),
