@@ -107,9 +107,9 @@ static void on_report(void *context, IOReturn result, void *sender,
   for (CFIndex i = 0; i < reportLength; ++i) {
     printf("%02x ", report[i]);
   }
+  printf("\n");
 
   // Check for updated gamepad state and report it if anything changed.
-  printf("\n");
   gamepad_state *state = context;
   assert(state && "expected a gamepad state in the context?!");
   gamepad_state old = *state;
