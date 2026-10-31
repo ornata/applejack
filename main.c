@@ -19,6 +19,13 @@ static bool equal_state(gamepad_state a, gamepad_state b) {
          a.buttons == b.buttons;
 }
 
+/// Returns the overflow limit that should be applied to a 32-bit value when
+/// adding an 8-bit signed value v. Assumes that v is nonzero.
+static int32_t overflow_limit_8_32(int8_t v) {
+  assert(v && "v shouldn't ever be 0?!");
+  return v > 0 ? INT32_MAX : INT32_MIN;
+}
+
 /// Decodes what happened with the gamepad when a button was pressed, the
 /// trackball was moved, etc. The updated state is returned in \p outState.
 /// Returns true on success, false otherwise.
@@ -36,9 +43,9 @@ static bool pad_decode(gamepad_state prevState, const uint8_t *report,
   // Saturate on overflow when updating trackball position.
   // Probably never happens, but let's avoid UB.
   if (__builtin_add_overflow(prevState.x, dx, &outState->x))
-    outState->x = (dx > 0) ? INT32_MAX : INT32_MIN;
+    outState->x = overflow_limit_8_32(dx);
   if (__builtin_add_overflow(prevState.y, dy, &outState->y))
-    outState->y = (dy > 0) ? INT32_MAX : INT32_MIN;
+    outState->y = overflow_limit_8_32(dy);
   // If we have no buttons and no movement, then either we pressed something we
   // don't handle, or we released something. If previously no trigger was held
   // before, we assume the previous state was a release. Therefore, in that
