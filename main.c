@@ -220,7 +220,11 @@ int main(void) {
     goto cleanup;
   }
   CFRunLoopRun();
-  set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_DEFAULT);
+  if (!set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_DEFAULT)) {
+      // Failed to restore the state. This is probably out of our control, so
+      // we'll let it return 0.
+      fprintf(stderr, "warning: Pad may still be in extended mode; replug the iMate\n");
+  }
   status = 0; // success
 cleanup:
   if (lusb_handle)
