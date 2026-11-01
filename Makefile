@@ -1,6 +1,6 @@
 CC       := clang
-CFLAGS   := -std=c11 -Wall -Wextra -Wpedantic
-LDFLAGS  := -framework IOKit -framework CoreFoundation
+CFLAGS   := -std=c11 -Wall -Wextra -Wpedantic $(shell pkg-config --cflags libusb-1.0)
+LDFLAGS  := -framework IOKit -framework CoreFoundation $(shell pkg-config --libs libusb-1.0)
 
 CONFIG ?= debug
 

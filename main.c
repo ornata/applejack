@@ -2,6 +2,7 @@
 #include <IOKit/hid/IOHIDKeys.h> // kIOHIDVendorIDKey, kIOHIDProductIDKey, ...
 #include <IOKit/hid/IOHIDManager.h> // manager, matching, callbacks
 #include <assert.h>
+#include <libusb.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -111,6 +112,27 @@ static void on_report(void *context, IOReturn result, void *sender,
          state->y, state->other, state->buttons);
 }
 
+// Send an ADB command through the iMate that tells the device at the given
+// address to switch to the given handler ID.
+//
+// Blocks.
+//
+// Returns true if the full message was sent.
+static bool set_pad_handler(libusb_device_handle *handle, uint8_t adb_address,
+                            uint8_t handler_id) {
+  // Listen to register 3.
+  uint8_t register_contents[2] = {0x20 | adb_address, handler_id};
+  uint8_t adb_command_byte = (adb_address << 4) | 0x08 | 3;
+  enum {
+    imate_request_type = LIBUSB_REQUEST_TYPE_VENDOR |
+                         LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_OUT
+  };
+  return libusb_control_transfer(
+             handle, imate_request_type, /*bRequest = */ 0, adb_command_byte,
+             /*unused*/ 0, register_contents, sizeof(register_contents),
+             /*timeout = */ 1000 /* ms*/) == sizeof(register_contents);
+}
+
 int main(void) {
   IOHIDManagerRef mgr =
       IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
@@ -152,8 +174,31 @@ int main(void) {
     CFRelease(mgr);
     return 1;
   }
-  // Block here and fire off callbacks from inside this call.
+  // Open libusb.
+  libusb_context *lusb_ctx = NULL;
+  libusb_device_handle *lusb_handle = NULL;
+  int status = 1;
+  if (libusb_init(&lusb_ctx)) {
+    printf("error: Failed to init libusb\n");
+    goto cleanup;
+  }
+  lusb_handle = libusb_open_device_with_vid_pid(lusb_ctx, vid, pid);
+  if (!lusb_handle) {
+    printf("error: Failed to create libusb device handle\n");
+    goto cleanup;
+  }
+  if (!set_pad_handler(lusb_handle, 3, 0x46)) {
+    printf("error: Could not set pad handler\n");
+    goto cleanup;
+  }
   CFRunLoopRun();
+  set_pad_handler(lusb_handle, 3, 0x01);
+  status = 0; // success
+cleanup:
+  if (lusb_handle)
+    libusb_close(lusb_handle);
+  if (lusb_ctx)
+    libusb_exit(lusb_ctx);
   CFRelease(mgr);
-  return 0;
+  return status;
 }
