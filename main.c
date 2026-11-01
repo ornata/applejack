@@ -102,7 +102,7 @@ static void on_report(void *context, IOReturn result, void *sender,
   // When we enter this function, it means we got an IO operation.
   // If there was any sort of error, then output it and bail.
   if (result != kIOReturnSuccess) {
-    fprintf(stderr, "report error: 0x%x\n", result);
+    fprintf(stderr, "error: input report failed: 0x%x\n", result);
     return;
   }
   assert(sender && "sender was null?!");
@@ -112,18 +112,19 @@ static void on_report(void *context, IOReturn result, void *sender,
   IOHIDDeviceRef device = (IOHIDDeviceRef)sender;
   CFTypeRef iface = IOHIDDeviceGetProperty(device, CFSTR("bInterfaceNumber"));
   if (!iface) {
-    fprintf(stderr, "Interface property missing; giving up\n");
+    fprintf(stderr, "error: Interface property missing; giving up\n");
     return;
   }
   // Get the integer ID for the interface so we can print it.
   int iface2int = -1;
   if (!CFNumberGetValue(iface, kCFNumberIntType, &iface2int)) {
-    fprintf(stderr, "Couldn't convert interface number to an int; giving up\n");
+    fprintf(stderr,
+            "error: Couldn't convert interface number to an int; giving up\n");
     return;
   }
   // The pad's reports come in on the mouse interface.
   if (iface2int != IMATE_INTERFACE_MOUSE) {
-    fprintf(stderr, "Expected a mouse; giving up\n");
+    fprintf(stderr, "error: Expected a mouse; giving up\n");
     return;
   }
   printf("Interface number: %d, hex: ", iface2int);
