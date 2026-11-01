@@ -41,13 +41,25 @@ typedef struct gamepad_state {
   uint16_t buttons; // BTN_*
 } gamepad_state;
 
+/// Helper enum for shared indices between button masks,
+/// pretty-printing strings, etc.
+enum gamepad_button_index {
+  BTN_IDX_LEFT_TRIGGER,
+  BTN_IDX_RIGHT_TRIGGER,
+  BTN_IDX_YELLOW,
+  BTN_IDX_BLUE,
+  BTN_IDX_RED,
+  BTN_IDX_COUNT, // always last!
+};
+_Static_assert(BTN_IDX_COUNT <= 16, "buttons is a uint16_t");
+
 /// Bit masks for each button on the controller.
 enum gamepad_button_mask {
-  BTN_LEFT_TRIGGER = 1 << 0,
-  BTN_RIGHT_TRIGGER = 1 << 1,
-  BTN_YELLOW = 1 << 2,
-  BTN_BLUE = 1 << 3,
-  BTN_RED = 1 << 4,
+  BTN_LEFT_TRIGGER = 1 << BTN_IDX_LEFT_TRIGGER,
+  BTN_RIGHT_TRIGGER = 1 << BTN_IDX_RIGHT_TRIGGER,
+  BTN_YELLOW = 1 << BTN_IDX_YELLOW,
+  BTN_BLUE = 1 << BTN_IDX_BLUE,
+  BTN_RED = 1 << BTN_IDX_RED,
   // TODO: more buttons
 };
 
@@ -69,6 +81,64 @@ static const gamepad_button_mapping button_map[] = {
     {BTN_RIGHT_TRIGGER, 0, 0x02, 0x00}, // active-high
 };
 // clang-format on
+
+/// Pretty printable names for buttons.
+// clang-format off
+static const char *const button_names[BTN_IDX_COUNT] = {
+    [BTN_IDX_LEFT_TRIGGER] = "left_trigger",
+    [BTN_IDX_RIGHT_TRIGGER] = "right_trigger",
+    [BTN_IDX_YELLOW] = "yellow",
+    [BTN_IDX_BLUE] = "blue",
+    [BTN_IDX_RED] = "red",
+    // TODO: More buttons
+};
+// clang-format on
+
+/// Maximum length of pretty printing string for buttons.
+#define BTN_PRETTY_PRINT_MAX 64
+/// Minimum length of pretty printing string for buttons.
+#define BTN_PRETTY_PRINT_MIN 7
+_Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
+               "need to fit '(none)' at the minimum");
+
+/// Change a set of buttons into a human-readable string.
+static bool buttons_to_string(char *out_buf, size_t size, uint16_t buttons) {
+  // make sure nobody is handing us garbage
+  if (size < BTN_PRETTY_PRINT_MIN || size > BTN_PRETTY_PRINT_MAX || !out_buf)
+    return false;
+  size_t remaining = size;
+  bool button_pressed = false;
+  for (size_t i = 0; i < BTN_IDX_COUNT; ++i) {
+    // if we only have one byte left, we need to write '\0'
+    if (remaining <= 1)
+      break;
+    if (!(buttons & (1U << i)))
+      continue;
+    button_pressed = true;
+    size_t used = size - remaining;
+    const char *name = button_names[i];
+    const char *sep = used > 0 ? ", " : "";
+    int n = name ? snprintf(out_buf + used, remaining, "%s%s", sep, name)
+                 : snprintf(out_buf + used, remaining, "%s(bit %zu)", sep, i);
+    // Formatting error?
+    if (n < 0)
+      break;
+    // Need to truncate?
+    if ((size_t)n >= remaining) {
+      remaining = 1;
+      break;
+    }
+    remaining -= (size_t)n;
+  }
+  // Was anything pressed at all?
+  if (!button_pressed) {
+    // Nothing was pressed, so just output "(none)" to signify that.
+    int n = snprintf(out_buf, size, "(none)");
+    remaining -= (size_t)n;
+  }
+  out_buf[size - remaining] = '\0';
+  return true;
+}
 
 /// Decode the button state of a 3 byte or empty report.
 /// Returns false if the report is the wrong size.
@@ -138,7 +208,11 @@ static void on_report(void *context, IOReturn result, void *sender,
   // Decode the buttons in the report and print the updated state.
   if (!pad_decode(report, report_length, state))
     return;
-  printf("gamepad state: buttons = %d\n", state->buttons);
+  char names[BTN_PRETTY_PRINT_MAX];
+  if (buttons_to_string(names, sizeof(names), state->buttons))
+    printf("gamepad state: buttons = %s\n", names);
+  else
+    fprintf(stderr, "error: Couldn't compute button name\n");
 }
 
 /// Send an ADB command through the iMate that tells the device at the given
@@ -221,9 +295,10 @@ int main(void) {
   }
   CFRunLoopRun();
   if (!set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_DEFAULT)) {
-      // Failed to restore the state. This is probably out of our control, so
-      // we'll let it return 0.
-      fprintf(stderr, "warning: Pad may still be in extended mode; replug the iMate\n");
+    // Failed to restore the state. This is probably out of our control, so
+    // we'll let it return 0.
+    fprintf(stderr,
+            "warning: Pad may still be in extended mode; replug the iMate\n");
   }
   status = 0; // success
 cleanup:
