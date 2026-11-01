@@ -12,13 +12,13 @@ typedef struct gamepad_state {
   uint16_t buttons; // BTN_*
 } gamepad_state;
 
-/// Bit positions for each button on the controller.
+/// Bit masks for each button on the controller.
 enum gamepad_button_mask {
   BTN_LEFT_TRIGGER = 1 << 0,
   BTN_RIGHT_TRIGGER = 1 << 1,
   BTN_YELLOW = 1 << 2,
   BTN_BLUE = 1 << 3,
-  BTN_RED = 1 << 4
+  BTN_RED = 1 << 4,
   // TODO: more buttons
 };
 
@@ -123,11 +123,11 @@ static bool set_pad_handler(libusb_device_handle *handle, uint8_t adb_address,
   uint8_t register_contents[2] = {0x20 | adb_address, handler_id};
   uint8_t adb_command_byte = (adb_address << 4) | 0x08 | 3;
   enum {
-    imate_request_type = LIBUSB_REQUEST_TYPE_VENDOR |
+    IMATE_REQUEST_TYPE = LIBUSB_REQUEST_TYPE_VENDOR |
                          LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_OUT
   };
   return libusb_control_transfer(
-             handle, imate_request_type, /*bRequest = */ 0, adb_command_byte,
+             handle, IMATE_REQUEST_TYPE, /*bRequest = */ 0, adb_command_byte,
              /*unused*/ 0, register_contents, sizeof(register_contents),
              /*timeout = */ 1000 /* ms*/) == sizeof(register_contents);
 }
