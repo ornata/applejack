@@ -141,12 +141,12 @@ static void on_report(void *context, IOReturn result, void *sender,
   printf("gamepad state: buttons = %d\n", state->buttons);
 }
 
-// Send an ADB command through the iMate that tells the device at the given
-// address to switch to the given handler ID.
-//
-// Blocks.
-//
-// Returns true if the full message was sent.
+/// Send an ADB command through the iMate that tells the device at the given
+/// address to switch to the given handler ID.
+///
+/// Blocks.
+///
+/// Returns true if the full message was sent.
 static bool set_pad_handler(libusb_device_handle *handle, uint8_t adb_address,
                             uint8_t handler_id) {
   // Listen to register 3.
