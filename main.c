@@ -2,7 +2,9 @@
 #include <IOKit/hid/IOHIDKeys.h> // kIOHIDVendorIDKey, kIOHIDProductIDKey, ...
 #include <IOKit/hid/IOHIDManager.h> // manager, matching, callbacks
 #include <assert.h>
+#include <dispatch/dispatch.h>
 #include <libusb.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -159,6 +161,16 @@ typedef struct app_context {
   gamepad_state state;
   trackball_position trackball_pos;
 } app_context;
+
+/// Signals to handle, so we don't end up with a stuck pad.
+static const int caught_signals[] = {SIGINT, SIGTERM, SIGHUP};
+#define CAUGHT_SIGNAL_COUNT (sizeof(caught_signals) / sizeof(caught_signals[0]))
+
+/// Stops the run loop so main can restore the pad.
+static void on_signal(void *context) {
+  (void)context;
+  CFRunLoopStop(CFRunLoopGetMain());
+}
 
 /// Change a set of buttons into a human-readable string.
 static bool buttons_to_string(char *out_buf, size_t size, uint16_t buttons) {
@@ -339,6 +351,7 @@ int main(void) {
   bool handler_switched = false;
   bool autopoll_off = false;
   CFRunLoopTimerRef timer = NULL;
+  dispatch_source_t signal_sources[CAUGHT_SIGNAL_COUNT] = {0};
   int status = 1;
 
   IOHIDManagerRef mgr =
@@ -414,9 +427,28 @@ int main(void) {
     goto cleanup;
   }
   CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopDefaultMode);
+  for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
+    // Make sure default action doesn't kill us.
+    signal(caught_signals[i], SIG_IGN);
+    signal_sources[i] =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, caught_signals[i],
+                               0, dispatch_get_main_queue());
+    if (!signal_sources[i]) {
+      fprintf(stderr, "error: Could not create dispatch source for signal\n");
+      goto cleanup;
+    }
+    dispatch_source_set_event_handler_f(signal_sources[i], on_signal);
+    dispatch_resume(signal_sources[i]);
+  }
   CFRunLoopRun();
   status = 0; // success
 cleanup:
+  for (size_t i = CAUGHT_SIGNAL_COUNT; i-- > 0;) {
+    if (!signal_sources[i])
+      continue;
+    dispatch_source_cancel(signal_sources[i]);
+    dispatch_release(signal_sources[i]);
+  }
   if (timer) {
     CFRunLoopTimerInvalidate(timer);
     CFRelease(timer);
