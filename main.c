@@ -9,8 +9,6 @@
 
 /// Represents the gamepad state as collected from the adapter.
 typedef struct gamepad_state {
-  int32_t x, y;   // accumulated trackball motion
-  uint32_t other; // count of "unknown button" events
   uint16_t buttons; // BTN_*
 } gamepad_state;
 
@@ -43,28 +41,12 @@ static const gamepad_button_mapping button_map[] = {
 };
 // clang-format on
 
-/// Returns true if a and b are the same gamepad state, false otherwise.
-static bool equal_state(gamepad_state a, gamepad_state b) {
-  return a.x == b.x && a.y == b.y && a.other == b.other &&
-         a.buttons == b.buttons;
-}
-
-/// Returns the overflow limit that should be applied to a 32-bit value when
-/// adding an 8-bit signed value v. Assumes that v is nonzero.
-static int32_t overflow_limit_8_32(int8_t v) {
-  assert(v && "v shouldn't ever be 0?!");
-  return v > 0 ? INT32_MAX : INT32_MIN;
-}
-
-/// Decodes what happened with the gamepad when a button was pressed, the
-/// trackball was moved, etc. The updated state is returned in \p outState.
-/// Returns true on success, false otherwise.
-static bool pad_decode(gamepad_state prevState, const uint8_t *report,
-                       CFIndex reportLength, gamepad_state *outState) {
+/// Returns true when a button press can successfully be decoded.
+static bool pad_decode(const uint8_t *report, CFIndex reportLength,
+                       gamepad_state *outState) {
   // Only accept a mouse-sized report.
   if (reportLength != 3)
     return false;
-
   // Walk over the button set. Mask in the bits for each button.
   uint16_t buttons = 0;
   size_t len = sizeof(button_map) / sizeof(button_map[0]);
@@ -73,23 +55,7 @@ static bool pad_decode(gamepad_state prevState, const uint8_t *report,
     if ((report[m->byte] ^ m->invert) & m->mask)
       buttons |= m->button;
   }
-
-  int8_t dx = (int8_t)report[1]; // change in x
-  int8_t dy = (int8_t)report[2]; // change in y
   outState->buttons = buttons;
-  outState->other = prevState.other; // pick up where we left off for other
-  // Saturate on overflow when updating trackball position.
-  // Probably never happens, but let's avoid UB.
-  if (__builtin_add_overflow(prevState.x, dx, &outState->x))
-    outState->x = overflow_limit_8_32(dx);
-  if (__builtin_add_overflow(prevState.y, dy, &outState->y))
-    outState->y = overflow_limit_8_32(dy);
-  // If we have no buttons and no movement, then either we pressed something we
-  // don't handle, or we released something. If previously no trigger was held
-  // before, we assume the previous state was a release. Therefore, in that
-  // case, this must be an unknown/other press.
-  if (buttons == 0 && dx == 0 && dy == 0 && prevState.buttons == 0)
-    outState->other += 1;
   return true;
 }
 
@@ -139,14 +105,10 @@ static void on_report(void *context, IOReturn result, void *sender,
   // Check for updated gamepad state and report it if anything changed.
   gamepad_state *state = context;
   assert(state && "expected a gamepad state in the context?!");
-  gamepad_state old = *state;
-  if (!pad_decode(old, report, reportLength, state))
-    return;
-  if (equal_state(old, *state))
+  if (!pad_decode(report, reportLength, state))
     return;
   // We updated the gamepad state. Print the updated state.
-  printf("gamepad state: x = %d, y = %d, other = %u, buttons = %d\n", state->x,
-         state->y, state->other, state->buttons);
+  printf("gamepad state: buttons = %d\n", state->buttons);
 }
 
 // Send an ADB command through the iMate that tells the device at the given
