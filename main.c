@@ -9,10 +9,39 @@
 
 /// Represents the gamepad state as collected from the adapter.
 typedef struct gamepad_state {
-  int32_t x, y;    // accumulated trackball motion
-  uint32_t other;  // count of "unknown button" events
-  uint8_t buttons; // bit0 = left trigger, bit1 = right trigger, bit2 = unused
+  int32_t x, y;   // accumulated trackball motion
+  uint32_t other; // count of "unknown button" events
+  uint16_t buttons; // BTN_*
 } gamepad_state;
+
+/// Bit positions for each button on the controller.
+enum gamepad_button_mask {
+  BTN_LEFT_TRIGGER = 1 << 0,
+  BTN_RIGHT_TRIGGER = 1 << 1,
+  BTN_YELLOW = 1 << 2,
+  BTN_BLUE = 1 << 3,
+  BTN_RED = 1 << 4
+  // TODO: more buttons
+};
+
+/// Represents the mapping of report values to buttons on the gamepad.
+typedef struct gamepad_button_mapping {
+  uint16_t button; // BTN bit set in the gamepad_state.
+  uint8_t byte;    // Which byte of the report.
+  uint8_t mask;    // Which bit in the report byte
+  uint8_t invert;  // XORed into report byte first. Matches mask == active low.
+} gamepad_button_mapping;
+
+/// Static LUT that contains all button mappings for the controller.
+// clang-format off
+static const gamepad_button_mapping button_map[] = {
+    {BTN_YELLOW,        1, 0x08, 0x08},
+    {BTN_BLUE,          1, 0x04, 0x04},
+    {BTN_RED,           2, 0x10, 0x10},
+    {BTN_LEFT_TRIGGER,  0, 0x01, 0x00}, // active-high
+    {BTN_RIGHT_TRIGGER, 0, 0x02, 0x00}, // active-high
+};
+// clang-format on
 
 /// Returns true if a and b are the same gamepad state, false otherwise.
 static bool equal_state(gamepad_state a, gamepad_state b) {
@@ -35,8 +64,16 @@ static bool pad_decode(gamepad_state prevState, const uint8_t *report,
   // Only accept a mouse-sized report.
   if (reportLength != 3)
     return false;
-  // Mask out which buttons came through via 0b00..0111
-  uint8_t buttons = report[0] & 0x07;
+
+  // Walk over the button set. Mask in the bits for each button.
+  uint16_t buttons = 0;
+  size_t len = sizeof(button_map) / sizeof(button_map[0]);
+  for (size_t i = 0; i < len; ++i) {
+    const gamepad_button_mapping *m = &button_map[i];
+    if ((report[m->byte] ^ m->invert) & m->mask)
+      buttons |= m->button;
+  }
+
   int8_t dx = (int8_t)report[1]; // change in x
   int8_t dy = (int8_t)report[2]; // change in y
   outState->buttons = buttons;
