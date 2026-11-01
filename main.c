@@ -7,6 +7,35 @@
 #include <stdint.h>
 #include <stdio.h>
 
+/// USB side of the iMate. Vendor identity, interfaces, etc.
+enum usb_protocol_imate {
+  IMATE_VENDOR_ID = 0x077d, // Griffin Technology
+  IMATE_PRODUCT_ID = 0x0405,
+  IMATE_INTERFACE_KEYBOARD = 0, // USB interface numbers
+  IMATE_INTERFACE_MOUSE = 1,
+  IMATE_MOUSE_REPORT_LENGTH = 3, // bytes in the mouse interface's HID report
+  IMATE_REQUEST_TYPE = LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE |
+                       LIBUSB_ENDPOINT_OUT,
+  IMATE_REQUEST_ADB_COMMAND = 0, // bRequest: send an ADB command
+  IMATE_TIMEOUT_MS = 1000,
+};
+
+/// Generic ADB protocol values.
+enum adb_protocol {
+  ADB_COMMAND_LISTEN = 0x08, // command bits of the ADB command byte
+  ADB_REGISTER_3 = 3,        // holds a device's address and handler ID
+  ADB_REGISTER_SIZE = 2,     // bytes in register 3
+  ADB_ADDRESS_SHIFT = 4,     // address is the high nibble of the command byte
+  ADB_R3_SRQ_ENABLE = 0x20,  // register 3, high byte: keep service requests on
+};
+
+/// Pippin controller-specific ADB protocol values.
+enum adb_protocol_pippin_controller {
+  PAD_ADB_ADDRESS = 3,
+  PAD_HANDLER_DEFAULT = 0x01,  // classic mouse: two buttons plus motion
+  PAD_HANDLER_EXTENDED = 0x46, // also reports the other buttons
+};
+
 /// Represents the gamepad state as collected from the adapter.
 typedef struct gamepad_state {
   uint16_t buttons; // BTN_*
@@ -45,7 +74,7 @@ static const gamepad_button_mapping button_map[] = {
 static bool pad_decode(const uint8_t *report, CFIndex report_length,
                        gamepad_state *out_state) {
   // Only accept a mouse-sized report.
-  if (report_length != 3)
+  if (report_length != IMATE_MOUSE_REPORT_LENGTH)
     return false;
   // Walk over the button set. Mask in the bits for each button.
   uint16_t buttons = 0;
@@ -92,8 +121,8 @@ static void on_report(void *context, IOReturn result, void *sender,
     printf("Couldn't convert interface number to an int; giving up\n");
     return;
   }
-  // 0 == keyboard, 1 == mouse
-  if (iface2int != 1) {
+  // The pad's reports come in on the mouse interface.
+  if (iface2int != IMATE_INTERFACE_MOUSE) {
     printf("Expected a mouse; giving up\n");
     return;
   }
@@ -120,16 +149,15 @@ static void on_report(void *context, IOReturn result, void *sender,
 static bool set_pad_handler(libusb_device_handle *handle, uint8_t adb_address,
                             uint8_t handler_id) {
   // Listen to register 3.
-  uint8_t register_contents[2] = {0x20 | adb_address, handler_id};
-  uint8_t adb_command_byte = (adb_address << 4) | 0x08 | 3;
-  enum {
-    IMATE_REQUEST_TYPE = LIBUSB_REQUEST_TYPE_VENDOR |
-                         LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_OUT
-  };
-  return libusb_control_transfer(
-             handle, IMATE_REQUEST_TYPE, /*bRequest = */ 0, adb_command_byte,
-             /*unused*/ 0, register_contents, sizeof(register_contents),
-             /*timeout = */ 1000 /* ms*/) == sizeof(register_contents);
+  uint8_t register_contents[ADB_REGISTER_SIZE] = {
+      ADB_R3_SRQ_ENABLE | adb_address, handler_id};
+  uint8_t adb_command_byte =
+      (adb_address << ADB_ADDRESS_SHIFT) | ADB_COMMAND_LISTEN | ADB_REGISTER_3;
+  return libusb_control_transfer(handle, IMATE_REQUEST_TYPE,
+                                 IMATE_REQUEST_ADB_COMMAND, adb_command_byte,
+                                 /*unused*/ 0, register_contents,
+                                 sizeof(register_contents),
+                                 IMATE_TIMEOUT_MS) == sizeof(register_contents);
 }
 
 int main(void) {
@@ -141,8 +169,8 @@ int main(void) {
   }
   // Build the matching dictionary. This lets us say that we only care about
   // some specific attached device. Otherwise, we match against all devices.
-  int vid = 0x077d; // Griffin Technology
-  int pid = 0x0405; // iMate
+  int vid = IMATE_VENDOR_ID;
+  int pid = IMATE_PRODUCT_ID;
   CFNumberRef vid_num =
       CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
   assert(vid_num &&
@@ -186,12 +214,12 @@ int main(void) {
     printf("error: Failed to create libusb device handle\n");
     goto cleanup;
   }
-  if (!set_pad_handler(lusb_handle, 3, 0x46)) {
+  if (!set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_EXTENDED)) {
     printf("error: Could not set pad handler\n");
     goto cleanup;
   }
   CFRunLoopRun();
-  set_pad_handler(lusb_handle, 3, 0x01);
+  set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_DEFAULT);
   status = 0; // success
 cleanup:
   if (lusb_handle)
