@@ -102,7 +102,7 @@ static void on_report(void *context, IOReturn result, void *sender,
   // When we enter this function, it means we got an IO operation.
   // If there was any sort of error, then output it and bail.
   if (result != kIOReturnSuccess) {
-    printf("report error: 0x%x\n", result);
+    fprintf(stderr, "report error: 0x%x\n", result);
     return;
   }
   assert(sender && "sender was null?!");
@@ -112,18 +112,18 @@ static void on_report(void *context, IOReturn result, void *sender,
   IOHIDDeviceRef device = (IOHIDDeviceRef)sender;
   CFTypeRef iface = IOHIDDeviceGetProperty(device, CFSTR("bInterfaceNumber"));
   if (!iface) {
-    printf("Interface property missing; giving up\n");
+    fprintf(stderr, "Interface property missing; giving up\n");
     return;
   }
   // Get the integer ID for the interface so we can print it.
   int iface2int = -1;
   if (!CFNumberGetValue(iface, kCFNumberIntType, &iface2int)) {
-    printf("Couldn't convert interface number to an int; giving up\n");
+    fprintf(stderr, "Couldn't convert interface number to an int; giving up\n");
     return;
   }
   // The pad's reports come in on the mouse interface.
   if (iface2int != IMATE_INTERFACE_MOUSE) {
-    printf("Expected a mouse; giving up\n");
+    fprintf(stderr, "Expected a mouse; giving up\n");
     return;
   }
   printf("Interface number: %d, hex: ", iface2int);
@@ -164,7 +164,7 @@ int main(void) {
   IOHIDManagerRef mgr =
       IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
   if (!mgr) {
-    printf("error: Couldn't create IOHIDManager; bailing.\n");
+    fprintf(stderr, "error: Couldn't create IOHIDManager; bailing.\n");
     return 1;
   }
   // Build the matching dictionary. This lets us say that we only care about
@@ -197,7 +197,7 @@ int main(void) {
   // Open it and check the result.
   IOReturn rc = IOHIDManagerOpen(mgr, kIOHIDOptionsTypeNone);
   if (rc != kIOReturnSuccess) {
-    printf("error: \n");
+    fprintf(stderr, "error: IOHIDManagerOpen failed: 0x%x\n", rc);
     CFRelease(mgr);
     return 1;
   }
@@ -206,16 +206,16 @@ int main(void) {
   libusb_device_handle *lusb_handle = NULL;
   int status = 1;
   if (libusb_init(&lusb_ctx)) {
-    printf("error: Failed to init libusb\n");
+    fprintf(stderr, "error: Failed to init libusb\n");
     goto cleanup;
   }
   lusb_handle = libusb_open_device_with_vid_pid(lusb_ctx, vid, pid);
   if (!lusb_handle) {
-    printf("error: Failed to create libusb device handle\n");
+    fprintf(stderr, "error: Failed to create libusb device handle\n");
     goto cleanup;
   }
   if (!set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_EXTENDED)) {
-    printf("error: Could not set pad handler\n");
+    fprintf(stderr, "error: Could not set pad handler\n");
     goto cleanup;
   }
   CFRunLoopRun();
