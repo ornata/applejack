@@ -42,10 +42,10 @@ static const gamepad_button_mapping button_map[] = {
 // clang-format on
 
 /// Returns true when a button press can successfully be decoded.
-static bool pad_decode(const uint8_t *report, CFIndex reportLength,
-                       gamepad_state *outState) {
+static bool pad_decode(const uint8_t *report, CFIndex report_length,
+                       gamepad_state *out_state) {
   // Only accept a mouse-sized report.
-  if (reportLength != 3)
+  if (report_length != 3)
     return false;
   // Walk over the button set. Mask in the bits for each button.
   uint16_t buttons = 0;
@@ -55,7 +55,7 @@ static bool pad_decode(const uint8_t *report, CFIndex reportLength,
     if ((report[m->byte] ^ m->invert) & m->mask)
       buttons |= m->button;
   }
-  outState->buttons = buttons;
+  out_state->buttons = buttons;
   return true;
 }
 
@@ -66,10 +66,10 @@ static bool pad_decode(const uint8_t *report, CFIndex reportLength,
 /// - The interface ID of the sender device
 /// - The raw bytes sent by the device.
 static void on_report(void *context, IOReturn result, void *sender,
-                      IOHIDReportType type, uint32_t reportID, uint8_t *report,
-                      CFIndex reportLength) {
+                      IOHIDReportType type, uint32_t report_id, uint8_t *report,
+                      CFIndex report_length) {
   (void)type;
-  (void)reportID;
+  (void)report_id;
   // When we enter this function, it means we got an IO operation.
   // If there was any sort of error, then output it and bail.
   if (result != kIOReturnSuccess) {
@@ -99,13 +99,13 @@ static void on_report(void *context, IOReturn result, void *sender,
   }
   printf("Interface number: %d, hex: ", iface2int);
   // Now, print out the raw bytes that were sent by the device.
-  for (CFIndex i = 0; i < reportLength; ++i)
+  for (CFIndex i = 0; i < report_length; ++i)
     printf("%02x ", report[i]);
   printf("\n");
   // Check for updated gamepad state and report it if anything changed.
   gamepad_state *state = context;
   assert(state && "expected a gamepad state in the context?!");
-  if (!pad_decode(report, reportLength, state))
+  if (!pad_decode(report, report_length, state))
     return;
   // We updated the gamepad state. Print the updated state.
   printf("gamepad state: buttons = %d\n", state->buttons);
@@ -143,22 +143,22 @@ int main(void) {
   // some specific attached device. Otherwise, we match against all devices.
   int vid = 0x077d; // Griffin Technology
   int pid = 0x0405; // iMate
-  CFNumberRef vidNum =
+  CFNumberRef vid_num =
       CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
-  assert(vidNum &&
-         "couldn't create vidNum?!"); // throwaway tool; assert is fine.
-  CFNumberRef pidNum =
+  assert(vid_num &&
+         "couldn't create vid_num?!"); // throwaway tool; assert is fine.
+  CFNumberRef pid_num =
       CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
-  assert(pidNum && "couldn't create pidNum?!");
+  assert(pid_num && "couldn't create pid_num?!");
   CFMutableDictionaryRef match = CFDictionaryCreateMutable(
       kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks);
-  CFDictionarySetValue(match, CFSTR(kIOHIDVendorIDKey), vidNum);
-  CFDictionarySetValue(match, CFSTR(kIOHIDProductIDKey), pidNum);
+  CFDictionarySetValue(match, CFSTR(kIOHIDVendorIDKey), vid_num);
+  CFDictionarySetValue(match, CFSTR(kIOHIDProductIDKey), pid_num);
   IOHIDManagerSetDeviceMatching(mgr, match);
   // Matching dictionary is set up. Clear the stuff we don't need.
-  CFRelease(vidNum);
-  CFRelease(pidNum);
+  CFRelease(vid_num);
+  CFRelease(pid_num);
   CFRelease(match);
   // Initialize a callback that uses the gamepad state in its context, then
   // attach it to the current thread.
