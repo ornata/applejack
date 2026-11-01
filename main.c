@@ -70,7 +70,8 @@ static const gamepad_button_mapping button_map[] = {
 };
 // clang-format on
 
-/// Returns true when a button press can successfully be decoded.
+/// Decode the button state of a 3 byte or empty report.
+/// Returns false if the report is the wrong size.
 static bool pad_decode(const uint8_t *report, CFIndex report_length,
                        gamepad_state *out_state) {
   // Only accept a mouse-sized report.
@@ -127,17 +128,16 @@ static void on_report(void *context, IOReturn result, void *sender,
     fprintf(stderr, "error: Expected a mouse; giving up\n");
     return;
   }
+  // Print out whatever we got from the device.
   printf("Interface number: %d, hex: ", iface2int);
-  // Now, print out the raw bytes that were sent by the device.
   for (CFIndex i = 0; i < report_length; ++i)
     printf("%02x ", report[i]);
   printf("\n");
-  // Check for updated gamepad state and report it if anything changed.
   gamepad_state *state = context;
   assert(state && "expected a gamepad state in the context?!");
+  // Decode the buttons in the report and print the updated state.
   if (!pad_decode(report, report_length, state))
     return;
-  // We updated the gamepad state. Print the updated state.
   printf("gamepad state: buttons = %d\n", state->buttons);
 }
 
