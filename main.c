@@ -217,6 +217,14 @@ static bool set_pad_handler(libusb_device_handle *handle, uint8_t adb_address,
 }
 
 int main(void) {
+  int vid = IMATE_VENDOR_ID;
+  int pid = IMATE_PRODUCT_ID;
+
+  libusb_context *lusb_ctx = NULL;
+  libusb_device_handle *lusb_handle = NULL;
+  int status = 1;
+  gamepad_state state = {0};
+
   IOHIDManagerRef mgr =
       IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
   if (!mgr) {
@@ -225,8 +233,6 @@ int main(void) {
   }
   // Build the matching dictionary. This lets us say that we only care about
   // some specific attached device. Otherwise, we match against all devices.
-  int vid = IMATE_VENDOR_ID;
-  int pid = IMATE_PRODUCT_ID;
   CFNumberRef vid_num =
       CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vid);
   assert(vid_num &&
@@ -246,7 +252,6 @@ int main(void) {
   CFRelease(match);
   // Initialize a callback that uses the gamepad state in its context, then
   // attach it to the current thread.
-  gamepad_state state = {0};
   IOHIDManagerRegisterInputReportCallback(mgr, on_report, /*context =*/&state);
   IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(),
                                   kCFRunLoopDefaultMode);
@@ -258,9 +263,6 @@ int main(void) {
     return 1;
   }
   // Open libusb.
-  libusb_context *lusb_ctx = NULL;
-  libusb_device_handle *lusb_handle = NULL;
-  int status = 1;
   if (libusb_init(&lusb_ctx)) {
     fprintf(stderr, "error: Failed to init libusb\n");
     goto cleanup;
