@@ -133,9 +133,31 @@ static int8_t motion_delta(uint8_t byte) {
   return (int8_t)v;
 }
 
+/// Stores the accumulated position of the controller trackball.
+typedef struct trackball_position {
+  int64_t x;
+  int64_t y;
+} trackball_position;
+
+/// Returns the limit value when adding v to a 64-bit value that overflows.
+static int64_t overflow_limit_64_8(int8_t v) {
+  return v > 0 ? INT64_MAX : INT64_MIN;
+}
+
+/// Add dx and dy to the trackball position.
+/// Saturates on overflow.
+static void trackball_accumulate(trackball_position *pos, int8_t dx,
+                                 int8_t dy) {
+  if (__builtin_add_overflow(pos->x, dx, &pos->x))
+    pos->x = overflow_limit_64_8(dx);
+  if (__builtin_add_overflow(pos->y, dy, &pos->y))
+    pos->y = overflow_limit_64_8(dy);
+}
+
 typedef struct app_context {
   libusb_device_handle *lusb_handle;
   gamepad_state state;
+  trackball_position trackball_pos;
 } app_context;
 
 /// Change a set of buttons into a human-readable string.
@@ -258,8 +280,11 @@ static void on_report(void *context, IOReturn result, void *sender,
     fprintf(stderr, "error: Couldn't compute button name\n");
   int8_t dx = app_ctx->state.dx;
   int8_t dy = app_ctx->state.dy;
-  if (dx || dy)
-    printf("gamepad_trackball: dx = %d, dy = %d\n", dx, dy);
+  if (dx || dy) {
+    trackball_accumulate(&app_ctx->trackball_pos, dx, dy);
+    printf("gamepad_trackball: dx = %d, dy = %d, pos = (%lld, %lld)\n", dx, dy,
+           app_ctx->trackball_pos.x, app_ctx->trackball_pos.y);
+  }
 }
 
 /// Send an ADB command through the iMate that tells the device at the given
