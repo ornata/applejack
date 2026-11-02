@@ -41,6 +41,14 @@ typedef struct gamepad_state {
   uint16_t buttons; // BTN_*
 } gamepad_state;
 
+/// Represents the mapping of report values to buttons on the gamepad.
+typedef struct gamepad_button_mapping {
+  uint16_t button; // BTN bit set in the gamepad_state.
+  uint8_t byte;    // Which byte of the report.
+  uint8_t mask;    // Which bit in the report byte
+  uint8_t invert;  // XORed into report byte first. Matches mask == active low.
+} gamepad_button_mapping;
+
 /// Helper macro to define buttons on the pad.
 // clang-format off
 #define GAMEPAD_BUTTONS(X)                                   \
@@ -56,14 +64,6 @@ typedef struct gamepad_state {
 enum gamepad_button_index { GAMEPAD_BUTTONS(X) BTN_IDX_COUNT };
 #undef X
 _Static_assert(BTN_IDX_COUNT <= 16, "buttons is a uint16_t");
-
-/// Represents the mapping of report values to buttons on the gamepad.
-typedef struct gamepad_button_mapping {
-  uint16_t button; // BTN bit set in the gamepad_state.
-  uint8_t byte;    // Which byte of the report.
-  uint8_t mask;    // Which bit in the report byte
-  uint8_t invert;  // XORed into report byte first. Matches mask == active low.
-} gamepad_button_mapping;
 
 /// Static LUT that contains all button mappings for the controller.
 #define X(id, name, byte, mask, invert) {1U << BTN_IDX_##id, byte, mask, invert},
