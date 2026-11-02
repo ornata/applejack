@@ -41,16 +41,20 @@ typedef struct gamepad_state {
   uint16_t buttons; // BTN_*
 } gamepad_state;
 
-/// Helper enum for shared indices between button masks,
-/// pretty-printing strings, etc.
-enum gamepad_button_index {
-  BTN_IDX_LEFT_TRIGGER,
-  BTN_IDX_RIGHT_TRIGGER,
-  BTN_IDX_YELLOW,
-  BTN_IDX_BLUE,
-  BTN_IDX_RED,
-  BTN_IDX_COUNT, // always last!
-};
+/// Helper macro to define buttons on the pad.
+// clang-format off
+#define GAMEPAD_BUTTONS(X)                                   \
+  /*  id             name              byte  mask  invert  */\
+  X(LEFT_TRIGGER,  "left_trigger",     0,    0x01,  0x00)    \
+  X(RIGHT_TRIGGER, "right_trigger",    0,    0x02,  0x00)    \
+  X(YELLOW,        "yellow",           1,    0x08,  0x08)    \
+  X(BLUE,          "blue",             1,    0x04,  0x04)    \
+  X(RED,           "red",              2,    0x10,  0x10)
+// clang-format on
+
+#define X(id, name, byte, mask, invert) BTN_IDX_##id,
+enum gamepad_button_index { GAMEPAD_BUTTONS(X) BTN_IDX_COUNT };
+#undef X
 _Static_assert(BTN_IDX_COUNT <= 16, "buttons is a uint16_t");
 
 /// Represents the mapping of report values to buttons on the gamepad.
@@ -62,27 +66,14 @@ typedef struct gamepad_button_mapping {
 } gamepad_button_mapping;
 
 /// Static LUT that contains all button mappings for the controller.
-// clang-format off
-static const gamepad_button_mapping button_map[] = {
-    {1 << BTN_IDX_YELLOW,        1, 0x08, 0x08},
-    {1 << BTN_IDX_BLUE,          1, 0x04, 0x04},
-    {1 << BTN_IDX_RED,           2, 0x10, 0x10},
-    {1 << BTN_IDX_LEFT_TRIGGER,  0, 0x01, 0x00}, // active-high
-    {1 << BTN_IDX_RIGHT_TRIGGER, 0, 0x02, 0x00}, // active-high
-};
-// clang-format on
+#define X(id, name, byte, mask, invert) {1U << BTN_IDX_##id, byte, mask, invert},
+static const gamepad_button_mapping button_map[] = {GAMEPAD_BUTTONS(X)};
+#undef X
 
-/// Pretty printable names for buttons.
-// clang-format off
-static const char *const button_names[BTN_IDX_COUNT] = {
-    [BTN_IDX_LEFT_TRIGGER] = "left_trigger",
-    [BTN_IDX_RIGHT_TRIGGER] = "right_trigger",
-    [BTN_IDX_YELLOW] = "yellow",
-    [BTN_IDX_BLUE] = "blue",
-    [BTN_IDX_RED] = "red",
-    // TODO: More buttons
-};
-// clang-format on
+/// Pretty printable names for buttons stored in a LUT.
+#define X(id, name, byte, mask, invert) [BTN_IDX_##id] = (name),
+static const char *const button_names[BTN_IDX_COUNT] = {GAMEPAD_BUTTONS(X)};
+#undef X
 
 /// Maximum length of pretty printing string for buttons.
 #define BTN_PRETTY_PRINT_MAX 64
