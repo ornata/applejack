@@ -299,6 +299,19 @@ static void on_report(void *context, IOReturn result, void *sender,
   }
 }
 
+/// Send a command to the iMate.
+/// Respects minimum spacing after the previous command.
+/// Returns 0 on success, or the libusb error code.
+static int imate_send(app_context *app_ctx, uint8_t request, uint16_t value,
+                      uint16_t index, uint8_t *data, uint16_t length) {
+  int rc =
+      libusb_control_transfer(app_ctx->lusb_handle, IMATE_REQUEST_TYPE, request,
+                              value, index, data, length, IMATE_TIMEOUT_MS);
+  if (rc < 0)
+    return rc;
+  return rc == length ? 0 : LIBUSB_ERROR_IO; // short transfer is an error
+}
+
 /// Send an ADB command through the iMate that tells the device at the given
 /// address to switch to the given handler ID.
 ///
@@ -312,29 +325,22 @@ static bool set_pad_handler(app_context *app_ctx, uint8_t adb_address,
       ADB_R3_SRQ_ENABLE | adb_address, handler_id};
   uint8_t adb_command_byte =
       (adb_address << ADB_ADDRESS_SHIFT) | ADB_COMMAND_LISTEN | ADB_REGISTER_3;
-  return libusb_control_transfer(app_ctx->lusb_handle, IMATE_REQUEST_TYPE,
-                                 IMATE_REQUEST_ADB_COMMAND, adb_command_byte,
-                                 /*unused*/ 0, register_contents,
-                                 sizeof(register_contents),
-                                 IMATE_TIMEOUT_MS) == sizeof(register_contents);
+  return imate_send(app_ctx, IMATE_REQUEST_ADB_COMMAND, adb_command_byte, 0,
+                    register_contents, sizeof(register_contents)) == 0;
 }
 
 /// Toggles autopolling for the pad.
 static bool set_autopoll(app_context *app_ctx, bool enabled) {
-  return libusb_control_transfer(app_ctx->lusb_handle, IMATE_REQUEST_TYPE,
-                                 IMATE_REQUEST_CONTROL, IMATE_CONTROL_AUTOPOLL,
-                                 enabled ? IMATE_AUTOPOLL_ON
-                                         : IMATE_AUTOPOLL_OFF,
-                                 /* data = */ NULL,
-                                 /* wLength = */ 0, IMATE_TIMEOUT_MS) == 0;
+  return imate_send(app_ctx, IMATE_REQUEST_CONTROL, IMATE_CONTROL_AUTOPOLL,
+                    enabled ? IMATE_AUTOPOLL_ON : IMATE_AUTOPOLL_OFF, NULL,
+                    0) == 0;
 }
 
 static void poll_pad(CFRunLoopTimerRef timer, void *info) {
   (void)timer;
   app_context *app_ctx = info;
-  int rc = libusb_control_transfer(
-      app_ctx->lusb_handle, IMATE_REQUEST_TYPE, IMATE_REQUEST_ADB_COMMAND,
-      PAD_COMMAND_TALK_R0, 0, NULL, 0, IMATE_TIMEOUT_MS);
+  int rc = imate_send(app_ctx, IMATE_REQUEST_ADB_COMMAND, PAD_COMMAND_TALK_R0,
+                      0, NULL, 0);
   if (rc) {
     fprintf(stderr, "error: Couldn't send talk r0 to the pad\n");
     // Send failure to cleanup.
