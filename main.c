@@ -53,16 +53,6 @@ enum gamepad_button_index {
 };
 _Static_assert(BTN_IDX_COUNT <= 16, "buttons is a uint16_t");
 
-/// Bit masks for each button on the controller.
-enum gamepad_button_mask {
-  BTN_LEFT_TRIGGER = 1 << BTN_IDX_LEFT_TRIGGER,
-  BTN_RIGHT_TRIGGER = 1 << BTN_IDX_RIGHT_TRIGGER,
-  BTN_YELLOW = 1 << BTN_IDX_YELLOW,
-  BTN_BLUE = 1 << BTN_IDX_BLUE,
-  BTN_RED = 1 << BTN_IDX_RED,
-  // TODO: more buttons
-};
-
 /// Represents the mapping of report values to buttons on the gamepad.
 typedef struct gamepad_button_mapping {
   uint16_t button; // BTN bit set in the gamepad_state.
@@ -74,11 +64,11 @@ typedef struct gamepad_button_mapping {
 /// Static LUT that contains all button mappings for the controller.
 // clang-format off
 static const gamepad_button_mapping button_map[] = {
-    {BTN_YELLOW,        1, 0x08, 0x08},
-    {BTN_BLUE,          1, 0x04, 0x04},
-    {BTN_RED,           2, 0x10, 0x10},
-    {BTN_LEFT_TRIGGER,  0, 0x01, 0x00}, // active-high
-    {BTN_RIGHT_TRIGGER, 0, 0x02, 0x00}, // active-high
+    {1 << BTN_IDX_YELLOW,        1, 0x08, 0x08},
+    {1 << BTN_IDX_BLUE,          1, 0x04, 0x04},
+    {1 << BTN_IDX_RED,           2, 0x10, 0x10},
+    {1 << BTN_IDX_LEFT_TRIGGER,  0, 0x01, 0x00}, // active-high
+    {1 << BTN_IDX_RIGHT_TRIGGER, 0, 0x02, 0x00}, // active-high
 };
 // clang-format on
 
