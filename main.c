@@ -12,17 +12,32 @@ enum usb_protocol_imate {
   IMATE_VENDOR_ID = 0x077d, // Griffin Technology
   IMATE_PRODUCT_ID = 0x0405,
   IMATE_INTERFACE_KEYBOARD = 0, // USB interface numbers
-  IMATE_INTERFACE_MOUSE = 1,
-  IMATE_MOUSE_REPORT_LENGTH = 3, // bytes in the mouse interface's HID report
   IMATE_REQUEST_TYPE = LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE |
                        LIBUSB_ENDPOINT_OUT,
   IMATE_REQUEST_ADB_COMMAND = 0, // bRequest: send an ADB command
   IMATE_TIMEOUT_MS = 1000,
+
+  IMATE_REPLY_SIZE = 8,
+  IMATE_REPLY_COMMAND_OFFSET = 0,
+  IMATE_REPLY_PACKET_OFFSET = 2,
+  IMATE_REPLY_FIRST_PACKET = 0x99, // byte 2: first packet of a reply
+  IMATE_REPLY_LENGTH_OFFSET = 3,
+  IMATE_REPLY_DATA_OFFSET = 4,
+
+  IMATE_REQUEST_CONTROL = 1,   // bRequest: iMate settings
+  IMATE_CONTROL_AUTOPOLL = 4,  // wValue: iMate polling for the bus
+  IMATE_AUTOPOLL_OFF = 0x00ff, // wIndex
+  IMATE_AUTOPOLL_ON = 0x000a,  // wIndex: poll interval
 };
+
+// polling interval in seconds
+#define IMATE_POLL_INTERVAL_S 0.010
 
 /// Generic ADB protocol values.
 enum adb_protocol {
-  ADB_COMMAND_LISTEN = 0x08, // command bits of the ADB command byte
+  ADB_COMMAND_LISTEN = 0x08, // command bits: write register on device
+  ADB_COMMAND_TALK = 0x0C,   // command bits: read register
+  ADB_REGISTER_0 = 0,        // event data: button, motion reports
   ADB_REGISTER_3 = 3,        // holds a device's address and handler ID
   ADB_REGISTER_SIZE = 2,     // bytes in register 3
   ADB_ADDRESS_SHIFT = 4,     // address is the high nibble of the command byte
@@ -32,8 +47,15 @@ enum adb_protocol {
 /// Pippin controller-specific ADB protocol values.
 enum adb_protocol_pippin_controller {
   PAD_ADB_ADDRESS = 3,
-  PAD_HANDLER_DEFAULT = 0x01,  // classic mouse: two buttons plus motion
-  PAD_HANDLER_EXTENDED = 0x46, // also reports the other buttons
+  // two buttons + motion (mouse)
+  PAD_HANDLER_DEFAULT = 0x01,
+  // adds additional buttons; seems to be the only
+  // ID > 1 the pad accepts
+  PAD_HANDLER_EXTENDED = 0x46,
+  // full ADB command byte to register 0
+  PAD_COMMAND_TALK_R0 = (PAD_ADB_ADDRESS << ADB_ADDRESS_SHIFT) |
+                        ADB_COMMAND_TALK | ADB_REGISTER_0,
+  PAD_REGISTER_0_SIZE = 4,
 };
 
 /// Represents the gamepad state as collected from the adapter.
@@ -46,32 +68,31 @@ typedef struct gamepad_button_mapping {
   uint16_t button; // BTN bit set in the gamepad_state.
   uint8_t byte;    // Which byte of the report.
   uint8_t mask;    // Which bit in the report byte
-  uint8_t invert;  // XORed into report byte first. Matches mask == active low.
 } gamepad_button_mapping;
 
 /// Helper macro to define buttons on the pad.
 // clang-format off
-#define GAMEPAD_BUTTONS(X)                                   \
-  /*  id             name              byte  mask  invert  */\
-  X(LEFT_TRIGGER,  "left_trigger",     0,    0x01,  0x00)    \
-  X(RIGHT_TRIGGER, "right_trigger",    0,    0x02,  0x00)    \
-  X(YELLOW,        "yellow",           1,    0x08,  0x08)    \
-  X(BLUE,          "blue",             1,    0x04,  0x04)    \
-  X(RED,           "red",              2,    0x10,  0x10)
+#define GAMEPAD_BUTTONS(X)                            \
+  /*  id             name              byte  mask */  \
+  X(LEFT_TRIGGER,  "left_trigger",     0,    0x80)    \
+  X(RIGHT_TRIGGER, "right_trigger",    1,    0x80)    \
+  X(YELLOW,        "yellow",           2,    0x02)    \
+  X(BLUE,          "blue",             2,    0x01)    \
+  X(RED,           "red",              2,    0x40)
 // clang-format on
 
-#define X(id, name, byte, mask, invert) BTN_IDX_##id,
+#define X(id, name, byte, mask) BTN_IDX_##id,
 enum gamepad_button_index { GAMEPAD_BUTTONS(X) BTN_IDX_COUNT };
 #undef X
 _Static_assert(BTN_IDX_COUNT <= 16, "buttons is a uint16_t");
 
 /// Static LUT that contains all button mappings for the controller.
-#define X(id, name, byte, mask, invert) {1U << BTN_IDX_##id, byte, mask, invert},
+#define X(id, name, byte, mask) {1U << BTN_IDX_##id, byte, mask},
 static const gamepad_button_mapping button_map[] = {GAMEPAD_BUTTONS(X)};
 #undef X
 
 /// Pretty printable names for buttons stored in a LUT.
-#define X(id, name, byte, mask, invert) [BTN_IDX_##id] = (name),
+#define X(id, name, byte, mask) [BTN_IDX_##id] = (name),
 static const char *const button_names[BTN_IDX_COUNT] = {GAMEPAD_BUTTONS(X)};
 #undef X
 
@@ -81,6 +102,11 @@ static const char *const button_names[BTN_IDX_COUNT] = {GAMEPAD_BUTTONS(X)};
 #define BTN_PRETTY_PRINT_MIN 7
 _Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
                "need to fit '(none)' at the minimum");
+
+typedef struct app_context {
+  libusb_device_handle *lusb_handle;
+  gamepad_state state;
+} app_context;
 
 /// Change a set of buttons into a human-readable string.
 static bool buttons_to_string(char *out_buf, size_t size, uint16_t buttons) {
@@ -121,23 +147,29 @@ static bool buttons_to_string(char *out_buf, size_t size, uint16_t buttons) {
   return true;
 }
 
-/// Decode the button state of a 3 byte or empty report.
-/// Returns false if the report is the wrong size.
-static bool pad_decode(const uint8_t *report, CFIndex report_length,
+static const uint8_t *raw_reply_data(const uint8_t *report, CFIndex len) {
+  if (len != IMATE_REPLY_SIZE)
+    return NULL;
+  if (report[IMATE_REPLY_COMMAND_OFFSET] != PAD_COMMAND_TALK_R0)
+    return NULL;
+  if (report[IMATE_REPLY_PACKET_OFFSET] != IMATE_REPLY_FIRST_PACKET)
+    return NULL;
+  if (report[IMATE_REPLY_LENGTH_OFFSET] != PAD_REGISTER_0_SIZE) // single packet
+    return NULL;
+  return report + IMATE_REPLY_DATA_OFFSET;
+}
+
+/// Decode button state from the pad and output it in out_state.
+static void pad_decode(const uint8_t data[PAD_REGISTER_0_SIZE],
                        gamepad_state *out_state) {
-  // Only accept a mouse-sized report.
-  if (report_length != IMATE_MOUSE_REPORT_LENGTH)
-    return false;
-  // Walk over the button set. Mask in the bits for each button.
   uint16_t buttons = 0;
   size_t len = sizeof(button_map) / sizeof(button_map[0]);
   for (size_t i = 0; i < len; ++i) {
     const gamepad_button_mapping *m = &button_map[i];
-    if ((report[m->byte] ^ m->invert) & m->mask)
+    if (!(data[m->byte] & m->mask))
       buttons |= m->button;
   }
   out_state->buttons = buttons;
-  return true;
 }
 
 /// Callback that runs every time we get an input report from the attached
@@ -174,11 +206,8 @@ static void on_report(void *context, IOReturn result, void *sender,
             "error: Couldn't convert interface number to an int; giving up\n");
     return;
   }
-  // The pad's reports come in on the mouse interface.
-  if (iface2int != IMATE_INTERFACE_MOUSE) {
-    fprintf(stderr, "error: Expected a mouse; giving up\n");
+  if (iface2int != IMATE_INTERFACE_KEYBOARD)
     return;
-  }
   // Print out whatever we got from the device.
   printf("Interface number: %d, hex: ", iface2int);
   for (CFIndex i = 0; i < report_length; ++i)
@@ -187,8 +216,10 @@ static void on_report(void *context, IOReturn result, void *sender,
   gamepad_state *state = context;
   assert(state && "expected a gamepad state in the context?!");
   // Decode the buttons in the report and print the updated state.
-  if (!pad_decode(report, report_length, state))
+  const uint8_t *data = raw_reply_data(report, report_length);
+  if (!data)
     return;
+  pad_decode(data, state);
   char names[BTN_PRETTY_PRINT_MAX];
   if (buttons_to_string(names, sizeof(names), state->buttons))
     printf("gamepad state: buttons = %s\n", names);
@@ -216,14 +247,39 @@ static bool set_pad_handler(libusb_device_handle *handle, uint8_t adb_address,
                                  IMATE_TIMEOUT_MS) == sizeof(register_contents);
 }
 
+/// Toggles autopolling for the pad.
+static bool set_autopoll(libusb_device_handle *handle, bool enabled) {
+  return libusb_control_transfer(handle, IMATE_REQUEST_TYPE,
+                                 IMATE_REQUEST_CONTROL, IMATE_CONTROL_AUTOPOLL,
+                                 enabled ? IMATE_AUTOPOLL_ON
+                                         : IMATE_AUTOPOLL_OFF,
+                                 /* data = */ NULL,
+                                 /* wLength = */ 0, IMATE_TIMEOUT_MS) == 0;
+}
+
+static void poll_pad(CFRunLoopTimerRef timer, void *info) {
+  (void)timer;
+  app_context *app_ctx = info;
+  int rc = libusb_control_transfer(
+      app_ctx->lusb_handle, IMATE_REQUEST_TYPE, IMATE_REQUEST_ADB_COMMAND,
+      PAD_COMMAND_TALK_R0, 0, NULL, 0, IMATE_TIMEOUT_MS);
+  if (rc) {
+    fprintf(stderr, "error: Couldn't send talk r0 to the pad\n");
+    // Send failure to cleanup.
+    CFRunLoopStop(CFRunLoopGetCurrent());
+  }
+}
+
 int main(void) {
   int vid = IMATE_VENDOR_ID;
   int pid = IMATE_PRODUCT_ID;
 
   libusb_context *lusb_ctx = NULL;
-  libusb_device_handle *lusb_handle = NULL;
+  app_context app_ctx = {0};
+  bool handler_switched = false;
+  bool autopoll_off = false;
+  CFRunLoopTimerRef timer = NULL;
   int status = 1;
-  gamepad_state state = {0};
 
   IOHIDManagerRef mgr =
       IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
@@ -250,9 +306,9 @@ int main(void) {
   CFRelease(vid_num);
   CFRelease(pid_num);
   CFRelease(match);
-  // Initialize a callback that uses the gamepad state in its context, then
-  // attach it to the current thread.
-  IOHIDManagerRegisterInputReportCallback(mgr, on_report, /*context =*/&state);
+  // Initialize reporting callback and attach it to the current thread.
+  IOHIDManagerRegisterInputReportCallback(mgr, on_report,
+                                          /*context =*/&app_ctx.state);
   IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(),
                                   kCFRunLoopDefaultMode);
   // Open it and check the result.
@@ -262,31 +318,57 @@ int main(void) {
     CFRelease(mgr);
     return status;
   }
+
   // Open libusb.
   if (libusb_init(&lusb_ctx)) {
     fprintf(stderr, "error: Failed to init libusb\n");
     goto cleanup;
   }
-  lusb_handle = libusb_open_device_with_vid_pid(lusb_ctx, vid, pid);
-  if (!lusb_handle) {
+  app_ctx.lusb_handle = libusb_open_device_with_vid_pid(lusb_ctx, vid, pid);
+  if (!app_ctx.lusb_handle) {
     fprintf(stderr, "error: Failed to create libusb device handle\n");
     goto cleanup;
   }
-  if (!set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_EXTENDED)) {
+  if (!set_pad_handler(app_ctx.lusb_handle, PAD_ADB_ADDRESS,
+                       PAD_HANDLER_EXTENDED)) {
     fprintf(stderr, "error: Could not set pad handler\n");
     goto cleanup;
   }
-  CFRunLoopRun();
-  if (!set_pad_handler(lusb_handle, PAD_ADB_ADDRESS, PAD_HANDLER_DEFAULT)) {
-    // Failed to restore the state. This is probably out of our control, so
-    // we'll let it return 0.
-    fprintf(stderr,
-            "warning: Pad may still be in extended mode; replug the iMate\n");
+  handler_switched = true;
+  autopoll_off = set_autopoll(app_ctx.lusb_handle, /* enabled = */ false);
+  if (!autopoll_off) {
+    fprintf(stderr, "error: Could not disable autopoll\n");
+    goto cleanup;
   }
+  CFRunLoopTimerContext run_timer_ctx = {
+      0, &app_ctx, NULL, NULL,
+      NULL}; // version, info, retain, release, description
+  timer = CFRunLoopTimerCreate(kCFAllocatorDefault,
+                               CFAbsoluteTimeGetCurrent() +
+                                   IMATE_POLL_INTERVAL_S, // first fire
+                               IMATE_POLL_INTERVAL_S,     // repeat interval
+                               0, 0,                      // flags, order
+                               poll_pad, &run_timer_ctx);
+  if (!timer) {
+    fprintf(stderr, "error: Could not create run loop timer\n");
+    goto cleanup;
+  }
+  CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopDefaultMode);
+  CFRunLoopRun();
   status = 0; // success
 cleanup:
-  if (lusb_handle)
-    libusb_close(lusb_handle);
+  if (timer) {
+    CFRunLoopTimerInvalidate(timer);
+    CFRelease(timer);
+  }
+  if (autopoll_off && !set_autopoll(app_ctx.lusb_handle, /* enabled = */ true))
+    fprintf(stderr, "warning: Could not re-enable autopoll on pad\n");
+  if (handler_switched && !set_pad_handler(app_ctx.lusb_handle, PAD_ADB_ADDRESS,
+                                           PAD_HANDLER_DEFAULT))
+    fprintf(stderr,
+            "warning: Pad may still be in extended mode; replug the iMate\n");
+  if (app_ctx.lusb_handle)
+    libusb_close(app_ctx.lusb_handle);
   if (lusb_ctx)
     libusb_exit(lusb_ctx);
   CFRelease(mgr);
