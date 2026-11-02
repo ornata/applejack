@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 /// USB side of the iMate. Vendor identity, interfaces, etc.
 enum usb_protocol_imate {
@@ -30,6 +31,12 @@ enum usb_protocol_imate {
   IMATE_CONTROL_AUTOPOLL = 4,  // wValue: iMate polling for the bus
   IMATE_AUTOPOLL_OFF = 0x00ff, // wIndex
   IMATE_AUTOPOLL_ON = 0x000a,  // wIndex: poll interval
+
+  // hack: add polling gaps to add minimum waits before sending commands
+  // to the iMate. The iMate tends to drop commands that arrive within
+  // a few ms of each other, which can prevent startup from working.
+  IMATE_POLL_GAP_MS = 5,     // hack: locally measured min with autopoll off
+  IMATE_COMMAND_GAP_MS = 30, // hack: from the vendor firmware
 };
 
 // polling interval in seconds
@@ -160,6 +167,7 @@ typedef struct app_context {
   libusb_device_handle *lusb_handle;
   gamepad_state state;
   trackball_position trackball_pos;
+  uint64_t last_command_ns;
 } app_context;
 
 /// Signals to handle, so we don't end up with a stuck pad.
@@ -299,14 +307,31 @@ static void on_report(void *context, IOReturn result, void *sender,
   }
 }
 
+static uint64_t now_ns(void) {
+  return clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+}
+
+/// True if at least gap_ms has passed since the previous command.
+static bool imate_ready(const app_context *app_ctx, uint32_t gap_ms) {
+  return now_ns() - app_ctx->last_command_ns >=
+         (uint64_t)gap_ms * NSEC_PER_MSEC;
+}
+
 /// Send a command to the iMate.
 /// Respects minimum spacing after the previous command.
+/// Must never be called from on_report or a timer callback with a nonzero wait.
 /// Returns 0 on success, or the libusb error code.
-static int imate_send(app_context *app_ctx, uint8_t request, uint16_t value,
-                      uint16_t index, uint8_t *data, uint16_t length) {
+/// TODO: remove gap_ms hack
+static int imate_send(app_context *app_ctx, uint32_t gap_ms, uint8_t request,
+                      uint16_t value, uint16_t index, uint8_t *data,
+                      uint16_t length) {
+  // pump until the device is ready
+  while (!imate_ready(app_ctx, gap_ms))
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.001, false);
   int rc =
       libusb_control_transfer(app_ctx->lusb_handle, IMATE_REQUEST_TYPE, request,
                               value, index, data, length, IMATE_TIMEOUT_MS);
+  app_ctx->last_command_ns = now_ns(); // stamp after transfer returns
   if (rc < 0) {
     fprintf(stderr,
             "error: iMate command (request %u, value 0x%04x) failed: %s\n",
@@ -329,13 +354,15 @@ static bool set_pad_handler(app_context *app_ctx, uint8_t adb_address,
       ADB_R3_SRQ_ENABLE | adb_address, handler_id};
   uint8_t adb_command_byte =
       (adb_address << ADB_ADDRESS_SHIFT) | ADB_COMMAND_LISTEN | ADB_REGISTER_3;
-  return imate_send(app_ctx, IMATE_REQUEST_ADB_COMMAND, adb_command_byte, 0,
-                    register_contents, sizeof(register_contents)) == 0;
+  return imate_send(app_ctx, IMATE_COMMAND_GAP_MS, IMATE_REQUEST_ADB_COMMAND,
+                    adb_command_byte, 0, register_contents,
+                    sizeof(register_contents)) == 0;
 }
 
 /// Toggles autopolling for the pad.
 static bool set_autopoll(app_context *app_ctx, bool enabled) {
-  return imate_send(app_ctx, IMATE_REQUEST_CONTROL, IMATE_CONTROL_AUTOPOLL,
+  return imate_send(app_ctx, IMATE_COMMAND_GAP_MS, IMATE_REQUEST_CONTROL,
+                    IMATE_CONTROL_AUTOPOLL,
                     enabled ? IMATE_AUTOPOLL_ON : IMATE_AUTOPOLL_OFF, NULL,
                     0) == 0;
 }
@@ -343,8 +370,10 @@ static bool set_autopoll(app_context *app_ctx, bool enabled) {
 static void poll_pad(CFRunLoopTimerRef timer, void *info) {
   (void)timer;
   app_context *app_ctx = info;
-  int rc = imate_send(app_ctx, IMATE_REQUEST_ADB_COMMAND, PAD_COMMAND_TALK_R0,
-                      0, NULL, 0);
+  if (!imate_ready(app_ctx, IMATE_POLL_GAP_MS))
+    return;
+  int rc = imate_send(app_ctx, IMATE_POLL_GAP_MS, IMATE_REQUEST_ADB_COMMAND,
+                      PAD_COMMAND_TALK_R0, 0, NULL, 0);
   if (rc) {
     fprintf(stderr, "error: Couldn't send talk r0 to the pad\n");
     // Send failure to cleanup.
