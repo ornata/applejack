@@ -78,7 +78,15 @@ typedef struct gamepad_button_mapping {
   X(RIGHT_TRIGGER, "right_trigger",    1,    0x80)    \
   X(YELLOW,        "yellow",           2,    0x02)    \
   X(BLUE,          "blue",             2,    0x01)    \
-  X(RED,           "red",              2,    0x40)
+  X(RED,           "red",              2,    0x40)    \
+  X(DPAD_UP,       "dpad_up",          2,    0x04)    \
+  X(DPAD_DOWN,     "dpad_down",        2,    0x20)    \
+  X(DPAD_LEFT,     "dpad_left",        2,    0x08)    \
+  X(DPAD_RIGHT,    "dpad_right",       2,    0x10)    \
+  X(GREEN,         "green",            2,    0x80)    \
+  X(SQUARE,        "square",           3,    0x01)    \
+  X(CIRCLE,        "circle",           3,    0x02)    \
+  X(DIAMOND,       "diamond",          3,    0x04)
 // clang-format on
 
 #define X(id, name, byte, mask) BTN_IDX_##id,
@@ -97,7 +105,7 @@ static const char *const button_names[BTN_IDX_COUNT] = {GAMEPAD_BUTTONS(X)};
 #undef X
 
 /// Maximum length of pretty printing string for buttons.
-#define BTN_PRETTY_PRINT_MAX 64
+#define BTN_PRETTY_PRINT_MAX 192
 /// Minimum length of pretty printing string for buttons.
 #define BTN_PRETTY_PRINT_MIN 7
 _Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
