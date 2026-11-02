@@ -229,7 +229,7 @@ int main(void) {
       IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
   if (!mgr) {
     fprintf(stderr, "error: Couldn't create IOHIDManager; bailing.\n");
-    return 1;
+    return status;
   }
   // Build the matching dictionary. This lets us say that we only care about
   // some specific attached device. Otherwise, we match against all devices.
@@ -260,7 +260,7 @@ int main(void) {
   if (rc != kIOReturnSuccess) {
     fprintf(stderr, "error: IOHIDManagerOpen failed: 0x%x\n", rc);
     CFRelease(mgr);
-    return 1;
+    return status;
   }
   // Open libusb.
   if (libusb_init(&lusb_ctx)) {
