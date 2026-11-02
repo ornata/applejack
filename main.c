@@ -245,20 +245,20 @@ static void on_report(void *context, IOReturn result, void *sender,
   for (CFIndex i = 0; i < report_length; ++i)
     printf("%02x ", report[i]);
   printf("\n");
-  gamepad_state *state = context;
-  assert(state && "expected a gamepad state in the context?!");
+  app_context *app_ctx = context;
+  gamepad_state state = app_ctx->state;
   // Decode the buttons in the report and print the updated state.
   const uint8_t *data = raw_reply_data(report, report_length);
   if (!data)
     return;
-  pad_decode(data, state);
+  pad_decode(data, &state);
   char names[BTN_PRETTY_PRINT_MAX];
-  if (buttons_to_string(names, sizeof(names), state->buttons))
+  if (buttons_to_string(names, sizeof(names), state.buttons))
     printf("gamepad_buttons: buttons = %s\n", names);
   else
     fprintf(stderr, "error: Couldn't compute button name\n");
-  if (state->dx || state->dy)
-    printf("gamepad_trackball: dx = %d, dy = %d\n", state->dx, state->dy);
+  if (state.dx || state.dy)
+    printf("gamepad_trackball: dx = %d, dy = %d\n", state.dx, state.dy);
 }
 
 /// Send an ADB command through the iMate that tells the device at the given
@@ -342,7 +342,7 @@ int main(void) {
   CFRelease(match);
   // Initialize reporting callback and attach it to the current thread.
   IOHIDManagerRegisterInputReportCallback(mgr, on_report,
-                                          /*context =*/&app_ctx.state);
+                                          /*context =*/&app_ctx);
   IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(),
                                   kCFRunLoopDefaultMode);
   // Open it and check the result.
