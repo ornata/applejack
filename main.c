@@ -307,8 +307,12 @@ static int imate_send(app_context *app_ctx, uint8_t request, uint16_t value,
   int rc =
       libusb_control_transfer(app_ctx->lusb_handle, IMATE_REQUEST_TYPE, request,
                               value, index, data, length, IMATE_TIMEOUT_MS);
-  if (rc < 0)
+  if (rc < 0) {
+    fprintf(stderr,
+            "error: iMate command (request %u, value 0x%04x) failed: %s\n",
+            request, value, libusb_error_name(rc));
     return rc;
+  }
   return rc == length ? 0 : LIBUSB_ERROR_IO; // short transfer is an error
 }
 
