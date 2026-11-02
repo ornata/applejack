@@ -56,11 +56,20 @@ enum adb_protocol_pippin_controller {
   PAD_COMMAND_TALK_R0 = (PAD_ADB_ADDRESS << ADB_ADDRESS_SHIFT) |
                         ADB_COMMAND_TALK | ADB_REGISTER_0,
   PAD_REGISTER_0_SIZE = 4,
+
+  // trackball
+  PAD_MOTION_Y_BYTE = 0,  // y delta
+  PAD_MOTION_X_BYTE = 1,  // x delta
+  PAD_MOTION_MASK = 0x7f, // low 7: signed delta, 7: button (unused?)
+  PAD_MOTION_SIGN = 0x40, // bit 6: sign
+  PAD_MOTION_RANGE = 0x80 // 2^7, subtracted to sext
 };
 
 /// Represents the gamepad state as collected from the adapter.
 typedef struct gamepad_state {
   uint16_t buttons; // BTN_*
+  int8_t dx;        // trackball delta x; 7 bit signed value
+  int8_t dy;        // trackball delta y; 7 bit signed value
 } gamepad_state;
 
 /// Represents the mapping of report values to buttons on the gamepad.
@@ -110,6 +119,19 @@ static const char *const button_names[BTN_IDX_COUNT] = {GAMEPAD_BUTTONS(X)};
 #define BTN_PRETTY_PRINT_MIN 7
 _Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
                "need to fit '(none)' at the minimum");
+
+/// Turns a byte from the pad into a raw movement amount.
+static int8_t motion_delta(uint8_t byte) {
+  // bit:   7        6 5 4 3 2 1 0      < movement in [-64, -1]
+  //        flag     7-bit signed delta < mouse trigger
+  // Don't need the mouse trigger, so kill it.
+  int v = byte & PAD_MOTION_MASK;
+  // manually instead of bit twiddling to avoid impl defined behaviour
+  if (v & PAD_MOTION_SIGN) // check if negative
+    v -= PAD_MOTION_RANGE; // sext
+  // cast is fine, we're in -64..63
+  return (int8_t)v;
+}
 
 typedef struct app_context {
   libusb_device_handle *lusb_handle;
@@ -178,6 +200,8 @@ static void pad_decode(const uint8_t data[PAD_REGISTER_0_SIZE],
       buttons |= m->button;
   }
   out_state->buttons = buttons;
+  out_state->dx = motion_delta(data[PAD_MOTION_X_BYTE]);
+  out_state->dy = motion_delta(data[PAD_MOTION_Y_BYTE]);
 }
 
 /// Callback that runs every time we get an input report from the attached
@@ -230,9 +254,11 @@ static void on_report(void *context, IOReturn result, void *sender,
   pad_decode(data, state);
   char names[BTN_PRETTY_PRINT_MAX];
   if (buttons_to_string(names, sizeof(names), state->buttons))
-    printf("gamepad state: buttons = %s\n", names);
+    printf("gamepad_buttons: buttons = %s\n", names);
   else
     fprintf(stderr, "error: Couldn't compute button name\n");
+  if (state->dx || state->dy)
+    printf("gamepad_trackball: dx = %d, dy = %d\n", state->dx, state->dy);
 }
 
 /// Send an ADB command through the iMate that tells the device at the given
