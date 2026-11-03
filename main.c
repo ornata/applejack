@@ -1,3 +1,5 @@
+#include <ApplicationServices/ApplicationServices.h> // CGEvent*, AXIsProcessTrusted
+#include <Carbon/Carbon.h> // kVK_* constants only; nothing to link
 #include <CoreFoundation/CoreFoundation.h> // CFDictionary, CFNumber, CFRunLoop
 #include <IOKit/hid/IOHIDKeys.h> // kIOHIDVendorIDKey, kIOHIDProductIDKey, ...
 #include <IOKit/hid/IOHIDManager.h> // manager, matching, callbacks
@@ -176,12 +178,66 @@ static void trackball_accumulate(trackball_position *pos, int8_t dx,
     pos->y = overflow_limit_64_8(dy);
 }
 
+/// Which key each button posts.
+// clang-format off
+#define KEYMAP(X)                          \
+  /*  id             key               */  \
+  X(DPAD_UP,         kVK_UpArrow)          \
+  X(DPAD_DOWN,       kVK_DownArrow)        \
+  X(DPAD_LEFT,       kVK_LeftArrow)        \
+  X(DPAD_RIGHT,      kVK_RightArrow)       \
+  X(RED,             kVK_ANSI_X)           \
+  X(GREEN,           kVK_ANSI_Z)           \
+  X(BLUE,            kVK_ANSI_S)           \
+  X(YELLOW,          kVK_ANSI_A)           \
+  X(LEFT_TRIGGER,    kVK_ANSI_D)           \
+  X(RIGHT_TRIGGER,   kVK_ANSI_C)           \
+  X(CIRCLE,          kVK_Return)           \
+  X(SQUARE,          kVK_ANSI_Quote)       \
+  X(DIAMOND,         kVK_Tab)
+// clang-format on
+
+#define X(id, key) [BTN_IDX_##id] = (key),
+static const CGKeyCode button_keycode[BTN_IDX_COUNT] = {KEYMAP(X)};
+#undef X
+
+#define X(id, key) +1
+_Static_assert(0 KEYMAP(X) == BTN_IDX_COUNT, "keymap must list every button");
+#undef X
+
+typedef struct keyboard_output {
+  uint16_t held; // buttons currently posted as down
+} keyboard_output;
+
+/// Sends a keyboard message saying that the given key was down or up.
+static void key_post(const keyboard_output *out, CGKeyCode key, bool down) {
+  (void)out; // TODO
+  printf("%s %u\n", down ? "down" : "up", key);
+}
+
+/// Determines which keys to press or release based off the passed buttons.
+static void keyboard_apply(keyboard_output *out, uint16_t buttons) {
+  // Compare what we last told the OS was held with the new snapshot from the
+  // pad.
+  gamepad_edges e = gamepad_diff(out->held, buttons);
+  // Find the lowest bit set in the pressed and released sets and turn it into a
+  // keycode. Then, post that keycode. We'll do this for both presses and
+  // releases.
+  for (uint16_t m = e.released; m; m &= m - 1)
+    key_post(out, button_keycode[__builtin_ctz(m)], /*down = */ false);
+  for (uint16_t m = e.pressed; m; m &= m - 1)
+    key_post(out, button_keycode[__builtin_ctz(m)], /*down = */ true);
+  // Store the snapshot so the next call compares against it.
+  out->held = buttons;
+}
+
 typedef struct app_context {
   libusb_device_handle *lusb_handle;
   gamepad_state state;
   trackball_position trackball_pos;
   uint64_t last_command_ns;
-  bool stop_requested; // e.g. ctrl-c
+  bool stop_requested;      // e.g. ctrl-c
+  keyboard_output keyboard; // keys we've told the OS we're holding
 } app_context;
 
 /// Signals to handle, so we don't end up with a stuck pad.
@@ -309,6 +365,7 @@ static void on_report(void *context, IOReturn result, void *sender,
   if (!data)
     return;
   applejack_decode(data, &app_ctx->state);
+  keyboard_apply(&app_ctx->keyboard, app_ctx->state.buttons);
   char names[BTN_PRETTY_PRINT_MAX];
   if (gamepad_buttons_to_string(names, sizeof(names), app_ctx->state.buttons))
     printf("gamepad_buttons: buttons = %s\n", names);
