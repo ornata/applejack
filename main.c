@@ -387,8 +387,8 @@ int main(void) {
 
   libusb_context *lusb_ctx = NULL;
   app_context app_ctx = {0};
-  bool handler_switched = false;
-  bool autopoll_off = false;
+  bool pad_handler_touched = false; // True if we tried to set the pad handler
+  bool imate_autopoll_touched = false; // True if we tried to change autopoll
   CFRunLoopTimerRef timer = NULL;
   dispatch_source_t signal_sources[CAUGHT_SIGNAL_COUNT] = {0};
   int status = 1;
@@ -441,13 +441,15 @@ int main(void) {
     fprintf(stderr, "error: Failed to create libusb device handle\n");
     goto cleanup;
   }
+  // Mark that we tried to touch the pad handler so we know to clean up.
+  pad_handler_touched = true;
   if (!set_pad_handler(&app_ctx, PAD_ADB_ADDRESS, PAD_HANDLER_EXTENDED)) {
     fprintf(stderr, "error: Could not set pad handler\n");
     goto cleanup;
   }
-  handler_switched = true;
-  autopoll_off = set_autopoll(&app_ctx, /* enabled = */ false);
-  if (!autopoll_off) {
+  // Mark that we tried to set the iMate's autopoll so we know to clean up.
+  imate_autopoll_touched = true;
+  if (!set_autopoll(&app_ctx, /* enabled = */ false)) {
     fprintf(stderr, "error: Could not disable autopoll\n");
     goto cleanup;
   }
@@ -491,9 +493,9 @@ cleanup:
     CFRunLoopTimerInvalidate(timer);
     CFRelease(timer);
   }
-  if (autopoll_off && !set_autopoll(&app_ctx, /* enabled = */ true))
-    fprintf(stderr, "warning: Could not re-enable autopoll on pad\n");
-  if (handler_switched &&
+  if (imate_autopoll_touched && !set_autopoll(&app_ctx, /* enabled = */ true))
+    fprintf(stderr, "warning: Could not re-enable autopoll on iMate\n");
+  if (pad_handler_touched &&
       !set_pad_handler(&app_ctx, PAD_ADB_ADDRESS, PAD_HANDLER_DEFAULT))
     fprintf(stderr,
             "warning: Pad may still be in extended mode; replug the iMate\n");
