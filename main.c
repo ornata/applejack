@@ -11,7 +11,7 @@
 #include <time.h>
 
 /// USB side of the iMate. Vendor identity, interfaces, etc.
-enum usb_protocol_imate {
+enum imate_usb_protocol {
   IMATE_VENDOR_ID = 0x077d, // Griffin Technology
   IMATE_PRODUCT_ID = 0x0405,
   IMATE_INTERFACE_KEYBOARD = 0, // USB interface numbers
@@ -53,25 +53,25 @@ enum adb_protocol {
   ADB_R3_SRQ_ENABLE = 0x20,  // register 3, high byte: keep service requests on
 };
 
-/// Pippin controller-specific ADB protocol values.
-enum adb_protocol_pippin_controller {
-  PAD_ADB_ADDRESS = 3,
+/// Values specific to the AppleJack controller.
+enum applejack_protocol {
+  APPLEJACK_ADB_ADDRESS = 3,
   // two buttons + motion (mouse)
-  PAD_HANDLER_DEFAULT = 0x01,
+  APPLEJACK_HANDLER_DEFAULT = 0x01,
   // adds additional buttons; seems to be the only
-  // ID > 1 the pad accepts
-  PAD_HANDLER_EXTENDED = 0x46,
+  // ID > 1 the AppleJack accepts
+  APPLEJACK_HANDLER_EXTENDED = 0x46,
   // full ADB command byte to register 0
-  PAD_COMMAND_TALK_R0 = (PAD_ADB_ADDRESS << ADB_ADDRESS_SHIFT) |
-                        ADB_COMMAND_TALK | ADB_REGISTER_0,
-  PAD_REGISTER_0_SIZE = 4,
+  APPLEJACK_COMMAND_TALK_R0 = (APPLEJACK_ADB_ADDRESS << ADB_ADDRESS_SHIFT) |
+                              ADB_COMMAND_TALK | ADB_REGISTER_0,
+  APPLEJACK_REGISTER_0_SIZE = 4,
 
   // trackball
-  PAD_MOTION_Y_BYTE = 0,  // y delta
-  PAD_MOTION_X_BYTE = 1,  // x delta
-  PAD_MOTION_MASK = 0x7f, // low 7: signed delta, 7: button (unused?)
-  PAD_MOTION_SIGN = 0x40, // bit 6: sign
-  PAD_MOTION_RANGE = 0x80 // 2^7, subtracted to sext
+  APPLEJACK_MOTION_Y_BYTE = 0,  // y delta
+  APPLEJACK_MOTION_X_BYTE = 1,  // x delta
+  APPLEJACK_MOTION_MASK = 0x7f, // low 7: signed delta, 7: button (unused?)
+  APPLEJACK_MOTION_SIGN = 0x40, // bit 6: sign
+  APPLEJACK_MOTION_RANGE = 0x80 // 2^7, subtracted to sext
 };
 
 /// Represents the gamepad state as collected from the adapter.
@@ -130,14 +130,14 @@ _Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
                "need to fit '(none)' at the minimum");
 
 /// Turns a byte from the pad into a raw movement amount.
-static int8_t motion_delta(uint8_t byte) {
+static int8_t applejack_motion_delta(uint8_t byte) {
   // bit:   7        6 5 4 3 2 1 0      < movement in [-64, -1]
   //        flag     7-bit signed delta < mouse trigger
   // Don't need the mouse trigger, so kill it.
-  int v = byte & PAD_MOTION_MASK;
+  int v = byte & APPLEJACK_MOTION_MASK;
   // manually instead of bit twiddling to avoid impl defined behaviour
-  if (v & PAD_MOTION_SIGN) // check if negative
-    v -= PAD_MOTION_RANGE; // sext
+  if (v & APPLEJACK_MOTION_SIGN) // check if negative
+    v -= APPLEJACK_MOTION_RANGE; // sext
   // cast is fine, we're in -64..63
   return (int8_t)v;
 }
@@ -181,7 +181,8 @@ static void on_signal(void *context) {
 }
 
 /// Change a set of buttons into a human-readable string.
-static bool buttons_to_string(char *out_buf, size_t size, uint16_t buttons) {
+static bool gamepad_buttons_to_string(char *out_buf, size_t size,
+                                      uint16_t buttons) {
   // make sure nobody is handing us garbage
   if (size < BTN_PRETTY_PRINT_MIN || size > BTN_PRETTY_PRINT_MAX || !out_buf)
     return false;
@@ -219,21 +220,22 @@ static bool buttons_to_string(char *out_buf, size_t size, uint16_t buttons) {
   return true;
 }
 
-static const uint8_t *raw_reply_data(const uint8_t *report, CFIndex len) {
+static const uint8_t *applejack_reply_data(const uint8_t *report, CFIndex len) {
   if (len != IMATE_REPLY_SIZE)
     return NULL;
-  if (report[IMATE_REPLY_COMMAND_OFFSET] != PAD_COMMAND_TALK_R0)
+  if (report[IMATE_REPLY_COMMAND_OFFSET] != APPLEJACK_COMMAND_TALK_R0)
     return NULL;
   if (report[IMATE_REPLY_PACKET_OFFSET] != IMATE_REPLY_FIRST_PACKET)
     return NULL;
-  if (report[IMATE_REPLY_LENGTH_OFFSET] != PAD_REGISTER_0_SIZE) // single packet
+  if (report[IMATE_REPLY_LENGTH_OFFSET] !=
+      APPLEJACK_REGISTER_0_SIZE) // single packet
     return NULL;
   return report + IMATE_REPLY_DATA_OFFSET;
 }
 
 /// Decode button state from the pad and output it in out_state.
-static void pad_decode(const uint8_t data[PAD_REGISTER_0_SIZE],
-                       gamepad_state *out_state) {
+static void applejack_decode(const uint8_t data[APPLEJACK_REGISTER_0_SIZE],
+                             gamepad_state *out_state) {
   uint16_t buttons = 0;
   size_t len = sizeof(button_map) / sizeof(button_map[0]);
   for (size_t i = 0; i < len; ++i) {
@@ -242,8 +244,8 @@ static void pad_decode(const uint8_t data[PAD_REGISTER_0_SIZE],
       buttons |= m->button;
   }
   out_state->buttons = buttons;
-  out_state->dx = motion_delta(data[PAD_MOTION_X_BYTE]);
-  out_state->dy = motion_delta(data[PAD_MOTION_Y_BYTE]);
+  out_state->dx = applejack_motion_delta(data[APPLEJACK_MOTION_X_BYTE]);
+  out_state->dy = applejack_motion_delta(data[APPLEJACK_MOTION_Y_BYTE]);
 }
 
 /// Callback that runs every time we get an input report from the attached
@@ -289,12 +291,12 @@ static void on_report(void *context, IOReturn result, void *sender,
   printf("\n");
   app_context *app_ctx = context;
   // Decode the buttons in the report and print the updated state.
-  const uint8_t *data = raw_reply_data(report, report_length);
+  const uint8_t *data = applejack_reply_data(report, report_length);
   if (!data)
     return;
-  pad_decode(data, &app_ctx->state);
+  applejack_decode(data, &app_ctx->state);
   char names[BTN_PRETTY_PRINT_MAX];
-  if (buttons_to_string(names, sizeof(names), app_ctx->state.buttons))
+  if (gamepad_buttons_to_string(names, sizeof(names), app_ctx->state.buttons))
     printf("gamepad_buttons: buttons = %s\n", names);
   else
     fprintf(stderr, "error: Couldn't compute button name\n");
@@ -347,7 +349,7 @@ static int imate_send(app_context *app_ctx, uint32_t gap_ms, uint8_t request,
 /// Blocks.
 ///
 /// Returns true if the full message was sent.
-static bool set_pad_handler(app_context *app_ctx, uint8_t adb_address,
+static bool adb_set_handler(app_context *app_ctx, uint8_t adb_address,
                             uint8_t handler_id) {
   // Listen to register 3.
   uint8_t register_contents[ADB_REGISTER_SIZE] = {
@@ -360,20 +362,20 @@ static bool set_pad_handler(app_context *app_ctx, uint8_t adb_address,
 }
 
 /// Toggles autopolling for the pad.
-static bool set_autopoll(app_context *app_ctx, bool enabled) {
+static bool imate_set_autopoll(app_context *app_ctx, bool enabled) {
   return imate_send(app_ctx, IMATE_COMMAND_GAP_MS, IMATE_REQUEST_CONTROL,
                     IMATE_CONTROL_AUTOPOLL,
                     enabled ? IMATE_AUTOPOLL_ON : IMATE_AUTOPOLL_OFF, NULL,
                     0) == 0;
 }
 
-static void poll_pad(CFRunLoopTimerRef timer, void *info) {
+static void applejack_poll(CFRunLoopTimerRef timer, void *info) {
   (void)timer;
   app_context *app_ctx = info;
   if (!imate_ready(app_ctx, IMATE_POLL_GAP_MS))
     return;
   int rc = imate_send(app_ctx, IMATE_POLL_GAP_MS, IMATE_REQUEST_ADB_COMMAND,
-                      PAD_COMMAND_TALK_R0, 0, NULL, 0);
+                      APPLEJACK_COMMAND_TALK_R0, 0, NULL, 0);
   if (rc) {
     fprintf(stderr, "error: Couldn't send talk r0 to the pad\n");
     // Send failure to cleanup.
@@ -387,7 +389,8 @@ int main(void) {
 
   libusb_context *lusb_ctx = NULL;
   app_context app_ctx = {0};
-  bool pad_handler_touched = false; // True if we tried to set the pad handler
+  bool applejack_handler_touched =
+      false; // True if we tried to set the pad handler
   bool imate_autopoll_touched = false; // True if we tried to change autopoll
   CFRunLoopTimerRef timer = NULL;
   dispatch_source_t signal_sources[CAUGHT_SIGNAL_COUNT] = {0};
@@ -442,14 +445,15 @@ int main(void) {
     goto cleanup;
   }
   // Mark that we tried to touch the pad handler so we know to clean up.
-  pad_handler_touched = true;
-  if (!set_pad_handler(&app_ctx, PAD_ADB_ADDRESS, PAD_HANDLER_EXTENDED)) {
+  applejack_handler_touched = true;
+  if (!adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
+                       APPLEJACK_HANDLER_EXTENDED)) {
     fprintf(stderr, "error: Could not set pad handler\n");
     goto cleanup;
   }
   // Mark that we tried to set the iMate's autopoll so we know to clean up.
   imate_autopoll_touched = true;
-  if (!set_autopoll(&app_ctx, /* enabled = */ false)) {
+  if (!imate_set_autopoll(&app_ctx, /* enabled = */ false)) {
     fprintf(stderr, "error: Could not disable autopoll\n");
     goto cleanup;
   }
@@ -461,7 +465,7 @@ int main(void) {
                                    IMATE_POLL_INTERVAL_S, // first fire
                                IMATE_POLL_INTERVAL_S,     // repeat interval
                                0, 0,                      // flags, order
-                               poll_pad, &run_timer_ctx);
+                               applejack_poll, &run_timer_ctx);
   if (!timer) {
     fprintf(stderr, "error: Could not create run loop timer\n");
     goto cleanup;
@@ -493,10 +497,12 @@ cleanup:
     CFRunLoopTimerInvalidate(timer);
     CFRelease(timer);
   }
-  if (imate_autopoll_touched && !set_autopoll(&app_ctx, /* enabled = */ true))
+  if (imate_autopoll_touched &&
+      !imate_set_autopoll(&app_ctx, /* enabled = */ true))
     fprintf(stderr, "warning: Could not re-enable autopoll on iMate\n");
-  if (pad_handler_touched &&
-      !set_pad_handler(&app_ctx, PAD_ADB_ADDRESS, PAD_HANDLER_DEFAULT))
+  if (applejack_handler_touched &&
+      !adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
+                       APPLEJACK_HANDLER_DEFAULT))
     fprintf(stderr,
             "warning: Pad may still be in extended mode; replug the iMate\n");
   if (app_ctx.lusb_handle)
