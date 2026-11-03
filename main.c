@@ -129,6 +129,19 @@ static const char *const button_names[BTN_IDX_COUNT] = {GAMEPAD_BUTTONS(X)};
 _Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
                "need to fit '(none)' at the minimum");
 
+/// Represents which buttons changed between two snapshots.
+typedef struct gamepad_edges {
+  uint16_t pressed;  // bits that went up -> down
+  uint16_t released; // bits that went down -> up
+} gamepad_edges;
+
+/// Splits the change from prev to now into newly pressed and newly released
+/// buttons.
+static gamepad_edges gamepad_diff(uint16_t prev, uint16_t now) {
+  uint16_t changed = prev ^ now;
+  return (gamepad_edges){.pressed = changed & now, .released = changed & prev};
+}
+
 /// Turns a byte from the pad into a raw movement amount.
 static int8_t applejack_motion_delta(uint8_t byte) {
   // bit:   7        6 5 4 3 2 1 0      < movement in [-64, -1]
