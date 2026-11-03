@@ -168,6 +168,7 @@ typedef struct app_context {
   gamepad_state state;
   trackball_position trackball_pos;
   uint64_t last_command_ns;
+  bool stop_requested; // e.g. ctrl-c
 } app_context;
 
 /// Signals to handle, so we don't end up with a stuck pad.
@@ -176,7 +177,7 @@ static const int caught_signals[] = {SIGINT, SIGTERM, SIGHUP};
 
 /// Stops the run loop so main can restore the pad.
 static void on_signal(void *context) {
-  (void)context;
+  ((app_context *)context)->stop_requested = true;
   CFRunLoopStop(CFRunLoopGetMain());
 }
 
@@ -389,11 +390,11 @@ int main(void) {
 
   libusb_context *lusb_ctx = NULL;
   app_context app_ctx = {0};
+  dispatch_source_t signal_sources[CAUGHT_SIGNAL_COUNT] = {0};
   bool applejack_handler_touched =
       false; // True if we tried to set the pad handler
   bool imate_autopoll_touched = false; // True if we tried to change autopoll
   CFRunLoopTimerRef timer = NULL;
-  dispatch_source_t signal_sources[CAUGHT_SIGNAL_COUNT] = {0};
   int status = 1;
 
   IOHIDManagerRef mgr =
@@ -444,6 +445,20 @@ int main(void) {
     fprintf(stderr, "error: Failed to create libusb device handle\n");
     goto cleanup;
   }
+  for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
+    // Make sure default action doesn't kill us.
+    signal(caught_signals[i], SIG_IGN);
+    signal_sources[i] =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, caught_signals[i],
+                               0, dispatch_get_main_queue());
+    if (!signal_sources[i]) {
+      fprintf(stderr, "error: Could not create dispatch source for signal\n");
+      goto cleanup;
+    }
+    dispatch_set_context(signal_sources[i], &app_ctx);
+    dispatch_source_set_event_handler_f(signal_sources[i], on_signal);
+    dispatch_resume(signal_sources[i]);
+  }
   // Mark that we tried to touch the pad handler so we know to clean up.
   applejack_handler_touched = true;
   if (!adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
@@ -471,28 +486,13 @@ int main(void) {
     goto cleanup;
   }
   CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopDefaultMode);
-  for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
-    // Make sure default action doesn't kill us.
-    signal(caught_signals[i], SIG_IGN);
-    signal_sources[i] =
-        dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, caught_signals[i],
-                               0, dispatch_get_main_queue());
-    if (!signal_sources[i]) {
-      fprintf(stderr, "error: Could not create dispatch source for signal\n");
-      goto cleanup;
-    }
-    dispatch_source_set_event_handler_f(signal_sources[i], on_signal);
-    dispatch_resume(signal_sources[i]);
+  if (app_ctx.stop_requested) {
+    status = 0;
+    goto cleanup;
   }
   CFRunLoopRun();
   status = 0; // success
 cleanup:
-  for (size_t i = CAUGHT_SIGNAL_COUNT; i-- > 0;) {
-    if (!signal_sources[i])
-      continue;
-    dispatch_source_cancel(signal_sources[i]);
-    dispatch_release(signal_sources[i]);
-  }
   if (timer) {
     CFRunLoopTimerInvalidate(timer);
     CFRelease(timer);
@@ -505,6 +505,12 @@ cleanup:
                        APPLEJACK_HANDLER_DEFAULT))
     fprintf(stderr,
             "warning: Pad may still be in extended mode; replug the iMate\n");
+  for (size_t i = CAUGHT_SIGNAL_COUNT; i-- > 0;) {
+    if (!signal_sources[i])
+      continue;
+    dispatch_source_cancel(signal_sources[i]);
+    dispatch_release(signal_sources[i]);
+  }
   if (app_ctx.lusb_handle)
     libusb_close(app_ctx.lusb_handle);
   if (lusb_ctx)
