@@ -21,5 +21,5 @@ $ make debug
 $ sudo env OS_ACTIVITY_DT_MODE=YES ./build/debug/hidprobe
 ```
 
-Will set up the controller so that you can use the gamepad to play a game.
+Will set up the controller so that you can use the gamepad to play a game. Each button on the gamepad is mapped to a keyboard key.
 
