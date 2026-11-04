@@ -567,6 +567,7 @@ cleanup:
     CFRunLoopTimerInvalidate(timer);
     CFRelease(timer);
   }
+  keyboard_apply(&app_ctx.keyboard, /*buttons =*/0);
   if (imate_autopoll_touched &&
       !imate_set_autopoll(&app_ctx, /* enabled = */ true))
     fprintf(stderr, "warning: Could not re-enable autopoll on iMate\n");
