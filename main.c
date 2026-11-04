@@ -704,6 +704,30 @@ static bool imate_usb_open(int vid, int pid, app_resources *app_rsrc,
   return true;
 }
 
+/// Route SIGINT, SIGTERM and SIGHUP to on_signal so we can restore the pad
+/// before exiting.
+///
+/// Returns true on success. On failure, sources created so far remain in
+/// app_rsrc for teardown.
+static bool install_signal_handlers(app_resources *app_rsrc,
+                                    app_context *app_ctx) {
+  for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
+    // Make sure default action doesn't kill us.
+    signal(caught_signals[i], SIG_IGN);
+    app_rsrc->signal_sources[i] =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, caught_signals[i],
+                               0, dispatch_get_main_queue());
+    if (!app_rsrc->signal_sources[i]) {
+      fprintf(stderr, "error: Could not create dispatch source for signal\n");
+      return false;
+    }
+    dispatch_set_context(app_rsrc->signal_sources[i], app_ctx);
+    dispatch_source_set_event_handler_f(app_rsrc->signal_sources[i], on_signal);
+    dispatch_resume(app_rsrc->signal_sources[i]);
+  }
+  return true;
+}
+
 int main(void) {
   log_init();
   int vid = IMATE_VENDOR_ID;
@@ -716,21 +740,9 @@ int main(void) {
     return status;
   if (!imate_usb_open(vid, pid, &app_rsrc, &app_ctx))
     goto cleanup;
+  if (!install_signal_handlers(&app_rsrc, &app_ctx))
+    goto cleanup;
 
-  for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
-    // Make sure default action doesn't kill us.
-    signal(caught_signals[i], SIG_IGN);
-    app_rsrc.signal_sources[i] =
-        dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, caught_signals[i],
-                               0, dispatch_get_main_queue());
-    if (!app_rsrc.signal_sources[i]) {
-      fprintf(stderr, "error: Could not create dispatch source for signal\n");
-      goto cleanup;
-    }
-    dispatch_set_context(app_rsrc.signal_sources[i], &app_ctx);
-    dispatch_source_set_event_handler_f(app_rsrc.signal_sources[i], on_signal);
-    dispatch_resume(app_rsrc.signal_sources[i]);
-  }
   // Mark that we tried to touch the pad handler so we know to clean up.
   app_rsrc.applejack_handler_touched = true;
   if (!adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
