@@ -683,6 +683,27 @@ static bool hid_open(int vid, int pid, app_resources *app_rsrc,
   return true;
 }
 
+/// Initialize libusb and open the iMate by vendor/product ID.
+///
+/// Stores the context in app_rsrc->lusb_ctx and the device handle in
+/// app_ctx->lusb_handle.
+///
+/// Returns true on success.
+static bool setup_libusb(int vid, int pid, app_resources *app_rsrc,
+                         app_context *app_ctx) {
+  if (libusb_init(&app_rsrc->lusb_ctx)) {
+    fprintf(stderr, "error: Failed to init libusb\n");
+    return false;
+  }
+  app_ctx->lusb_handle =
+      libusb_open_device_with_vid_pid(app_rsrc->lusb_ctx, vid, pid);
+  if (!app_ctx->lusb_handle) {
+    fprintf(stderr, "error: Failed to create libusb device handle\n");
+    return false;
+  }
+  return true;
+}
+
 int main(void) {
   log_init();
   int vid = IMATE_VENDOR_ID;
@@ -693,18 +714,9 @@ int main(void) {
 
   if (!hid_open(vid, pid, &app_rsrc, &app_ctx))
     return status;
+  if (!setup_libusb(vid, pid, &app_rsrc, &app_ctx))
+    goto cleanup;
 
-  // Open libusb.
-  if (libusb_init(&app_rsrc.lusb_ctx)) {
-    fprintf(stderr, "error: Failed to init libusb\n");
-    goto cleanup;
-  }
-  app_ctx.lusb_handle =
-      libusb_open_device_with_vid_pid(app_rsrc.lusb_ctx, vid, pid);
-  if (!app_ctx.lusb_handle) {
-    fprintf(stderr, "error: Failed to create libusb device handle\n");
-    goto cleanup;
-  }
   for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
     // Make sure default action doesn't kill us.
     signal(caught_signals[i], SIG_IGN);
