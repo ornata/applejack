@@ -37,6 +37,27 @@ static void log_init(void) {
 #define LOG(cat, ...) os_log_info(logs[cat], __VA_ARGS__)
 
 /// USB side of the iMate. Vendor identity, interfaces, etc.
+///
+/// Commands (host -> iMate) are vendor control transfers, bmRequestType 0x41:
+///
+///   bRequest 0  ADB command    wValue = ADB command byte
+///                              data   = register bytes (Listen only)
+///   bRequest 1  iMate setting  wValue = setting (4 = autopoll)
+///                              wIndex = value (0x00ff off, 0x000a on)
+///
+/// Replies (iMate -> host) are 8-byte HID input reports on interface 0:
+///
+///   byte    0         1      2            3      4 .. 7
+///        +---------+------+------------+------+-----------------+
+///        | command | 0x00 | 0x99 first | data | register data   |
+///        | echo    |      | 0x98 next  | len  | (4 per packet)  |
+///        +---------+------+------------+------+-----------------+
+///
+///   e.g. Talk R3 reply  3f 00 99 02 6a 01 00 00   (2 bytes: handler 0x01)
+///        Talk R0 reply  3c 00 99 04 80 80 ff ff   (4 bytes: extended, idle)
+///
+/// macOS sees interface 0 as a keyboard and parses these as keyboard
+/// reports, so we seize it to keep the system from acting on them.
 enum imate_usb_protocol {
   IMATE_VENDOR_ID = 0x077d, // Griffin Technology
   IMATE_PRODUCT_ID = 0x0405,
@@ -69,6 +90,28 @@ enum imate_usb_protocol {
 #define IMATE_POLL_INTERVAL_S 0.010
 
 /// Generic ADB protocol values.
+///
+/// ADB command byte (host -> device):
+///
+///   bit    7 6 5 4   3 2   1 0
+///        +---------+-----+-----+
+///        | address | cmd | reg |
+///        +---------+-----+-----+
+///
+///   cmd: 00 reset/flush, 10 Listen (write register), 11 Talk (read register)
+///   e.g. Talk R0 to address 3 = 0x3c, Listen R3 to address 3 = 0x3b
+///
+/// Register 3 (2 bytes) holds the device's address and handler ID:
+///
+///   high byte                    low byte
+///   bit  7 6 5 4  3 2 1 0        7 6 5 4 3 2 1 0
+///       +-+-+-+-+---------+     +-----------------+
+///       |r|e|S|r| address |     |   handler ID    |
+///       +-+-+-+-+---------+     +-----------------+
+///   r = reserved, e = exceptional event, S = SRQ enable (0x20 in the byte)
+///
+/// On a read, the address nibble varied between replies (0x6a, 0x6b), so we
+/// never compare it; only the handler ID is meaningful.
 enum adb_protocol {
   ADB_COMMAND_LISTEN = 0x08, // command bits: write register on device
   ADB_COMMAND_TALK = 0x0C,   // command bits: read register
@@ -80,6 +123,23 @@ enum adb_protocol {
 };
 
 /// Values specific to the AppleJack controller.
+///
+/// Register 0 in extended mode (handler 0x46) is 4 bytes. Buttons are active
+/// low: a 0 bit means pressed. Idle is 80 80 ff ff.
+///
+///   bit        7       6       5       4       3       2       1       0
+///          +-------+-------+-------+-------+-------+-------+-------+-------+
+///   byte 0 | LT    | Y delta, 7-bit signed, + is down                      |
+///          +-------+-------+-------+-------+-------+-------+-------+-------+
+///   byte 1 | RT    | X delta, 7-bit signed, + is right                     |
+///          +-------+-------+-------+-------+-------+-------+-------+-------+
+///   byte 2 | GREEN | RED   | DOWN  | RIGHT | LEFT  | UP    | YELLOW| BLUE  |
+///          +-------+-------+-------+-------+-------+-------+-------+-------+
+///   byte 3 | -     | -     | -     | -     | -     |DIAMOND|CIRCLE |SQUARE |
+///          +-------+-------+-------+-------+-------+-------+-------+-------+
+///
+/// Default mode (handler 0x01) is only bytes 0 and 1: the usual ADB mouse
+/// format, a button in bit 7 and a signed delta in the low 7 bits.
 enum applejack_protocol {
   APPLEJACK_ADB_ADDRESS = 3,
   // two buttons + motion (mouse)
@@ -170,9 +230,12 @@ static gamepad_edges gamepad_diff(uint16_t prev, uint16_t now) {
 
 /// Turns a byte from the pad into a raw movement amount.
 static int8_t applejack_motion_delta(uint8_t byte) {
-  // bit:   7        6 5 4 3 2 1 0      < movement in [-64, -1]
-  //        flag     7-bit signed delta < mouse trigger
-  // Don't need the mouse trigger, so kill it.
+  // bit:   7        6 5 4 3 2 1 0
+  //        trigger  7-bit signed delta, two's complement, -64..63
+  //
+  // e.g. 0x05 = +5, 0x7b = -5, 0x40 = -64, 0x3f = +63, 0x80 = 0 (trigger only)
+  // Bit 7 is the trigger's state (active low), not part of the delta, so
+  // kill it.
   int v = byte & APPLEJACK_MOTION_MASK;
   // manually instead of bit twiddling to avoid impl defined behaviour
   if (v & APPLEJACK_MOTION_SIGN) // check if negative
