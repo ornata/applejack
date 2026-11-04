@@ -410,6 +410,9 @@ typedef struct app_resources {
   bool applejack_handler_touched;
   // True if we tried to update the iMate's autopoll.
   bool imate_autopoll_touched;
+  // Number of setup steps that ran, up to failure. Teardown will undo these
+  // steps.
+  size_t setup_steps_attempted;
 } app_resources;
 
 /// Stops the run loop so main can restore the pad.
@@ -630,12 +633,12 @@ static void applejack_poll(CFRunLoopTimerRef timer, void *info) {
 ///
 /// app_ctx is used for the reporting callback.
 ///
-/// Returns true on success.
+/// Returns true on success, false otherwise.
 ///
-/// On failure, returns false and sets app_rsrc->hid to
-/// NULL.
-static bool imate_hid_open(int vid, int pid, app_resources *app_rsrc,
-                           app_context *app_ctx) {
+/// On failure, app_rsrc->hid may still be set. imate_hid_close releases it.
+static bool imate_hid_open(app_resources *app_rsrc, app_context *app_ctx) {
+  int vid = IMATE_VENDOR_ID;
+  int pid = IMATE_PRODUCT_ID;
   // FIXME: can we avoid this?
   if (geteuid() != 0) {
     fprintf(stderr, "error: run with sudo; macOS gets in our way\n");
@@ -676,8 +679,6 @@ static bool imate_hid_open(int vid, int pid, app_resources *app_rsrc,
   IOReturn rc = IOHIDManagerOpen(app_rsrc->hid, kIOHIDOptionsTypeSeizeDevice);
   if (rc != kIOReturnSuccess) {
     fprintf(stderr, "error: IOHIDManagerOpen failed: 0x%x\n", rc);
-    CFRelease(app_rsrc->hid);
-    app_rsrc->hid = NULL; // avoid dangling ptr
     return false;
   }
   return true;
@@ -689,14 +690,13 @@ static bool imate_hid_open(int vid, int pid, app_resources *app_rsrc,
 /// app_ctx->lusb_handle.
 ///
 /// Returns true on success.
-static bool imate_usb_open(int vid, int pid, app_resources *app_rsrc,
-                           app_context *app_ctx) {
+static bool imate_usb_open(app_resources *app_rsrc, app_context *app_ctx) {
   if (libusb_init(&app_rsrc->lusb_ctx)) {
     fprintf(stderr, "error: Failed to init libusb\n");
     return false;
   }
-  app_ctx->lusb_handle =
-      libusb_open_device_with_vid_pid(app_rsrc->lusb_ctx, vid, pid);
+  app_ctx->lusb_handle = libusb_open_device_with_vid_pid(
+      app_rsrc->lusb_ctx, IMATE_VENDOR_ID, IMATE_PRODUCT_ID);
   if (!app_ctx->lusb_handle) {
     fprintf(stderr, "error: Failed to create libusb device handle\n");
     return false;
@@ -783,59 +783,120 @@ static bool setup_timer(app_resources *app_rsrc, app_context *app_ctx) {
   return true;
 }
 
+/// Release the HID manager, if one was created.
+/// Also return the seized device to the OS.
+static void imate_hid_close(app_resources *app_rsrc, app_context *app_ctx) {
+  (void)app_ctx;
+  if (app_rsrc->hid)
+    CFRelease(app_rsrc->hid);
+}
+
+/// Close the iMate's libusb handle and then its context, if they were opened.
+static void imate_usb_close(app_resources *app_rsrc, app_context *app_ctx) {
+  if (app_ctx->lusb_handle)
+    libusb_close(app_ctx->lusb_handle);
+  if (app_rsrc->lusb_ctx)
+    libusb_exit(app_rsrc->lusb_ctx);
+}
+
+/// Cancel and release the signal sources that were created, newest first.
+static void remove_signal_handlers(app_resources *app_rsrc,
+                                   app_context *app_ctx) {
+  (void)app_ctx;
+  for (size_t i = CAUGHT_SIGNAL_COUNT; i-- > 0;) {
+    if (!app_rsrc->signal_sources[i])
+      continue;
+    dispatch_source_cancel(app_rsrc->signal_sources[i]);
+    dispatch_release(app_rsrc->signal_sources[i]);
+  }
+}
+
+/// Put the AppleJack back in its default mode, if we touched it.
+static void applejack_restore_default_mode(app_resources *app_rsrc,
+                                           app_context *app_ctx) {
+  if (app_rsrc->applejack_handler_touched &&
+      !adb_set_handler(app_ctx, APPLEJACK_ADB_ADDRESS,
+                       APPLEJACK_HANDLER_DEFAULT))
+    fprintf(stderr,
+            "warning: Pad may still be in extended mode; replug the iMate\n");
+}
+
+/// Re-enable autopolling on the iMate, if we touched it.
+static void imate_restore_autopoll(app_resources *app_rsrc,
+                                   app_context *app_ctx) {
+  if (app_rsrc->imate_autopoll_touched &&
+      !imate_set_autopoll(app_ctx, /* enabled = */ true))
+    fprintf(stderr, "warning: Could not re-enable autopoll on iMate\n");
+}
+
+/// Stop and release the polling timer, if there is one, then release any keys
+/// we were holding so nothing stays pressed.
+static void teardown_timer(app_resources *app_rsrc, app_context *app_ctx) {
+  if (app_rsrc->timer) {
+    CFRunLoopTimerInvalidate(app_rsrc->timer);
+    CFRelease(app_rsrc->timer);
+  }
+  keyboard_apply(&app_ctx->keyboard, /*buttons =*/0);
+}
+
+/// Defines a step in the app setup/teardown.
+///
+/// Each step is something that needs to happen to set up the device/app, along
+/// with its buddy teardown step.
+typedef struct setup_step {
+  /// Function used to set up a resource that must be torn down.
+  bool (*up)(app_resources *, app_context *);
+
+  /// Buddy teardown. Must be safe to call after a partial up.
+  void (*down)(app_resources *, app_context *);
+} setup_step;
+
+/// Setup steps and buddy teardown steps, in order.
+/// Teardown happens in opposite order.
+static const setup_step setup_steps[] = {
+    {imate_hid_open, imate_hid_close},
+    {imate_usb_open, imate_usb_close},
+    {install_signal_handlers, remove_signal_handlers},
+    {applejack_try_set_extended_mode, applejack_restore_default_mode},
+    {imate_try_setup_autopoll, imate_restore_autopoll},
+    {setup_timer, teardown_timer},
+};
+#define SETUP_STEP_COUNT (sizeof(setup_steps) / sizeof(setup_steps[0]))
+
+/// Run each setup step in order, stopping at the first failure.
+///
+/// Records in app_rsrc->setup_steps_attempted how far it got, counting the
+/// step that failed, since it may have partly succeeded.
+///
+/// Returns true if every step succeeded.
+static bool app_setup(app_resources *app_rsrc, app_context *app_ctx) {
+  for (size_t i = 0; i < SETUP_STEP_COUNT; ++i) {
+    app_rsrc->setup_steps_attempted = i + 1;
+    if (!setup_steps[i].up(app_rsrc, app_ctx))
+      return false;
+  }
+  return true;
+}
+
+/// Undo every setup step that app_setup attempted, newest first.
+static void app_teardown(app_resources *app_rsrc, app_context *app_ctx) {
+  for (size_t i = app_rsrc->setup_steps_attempted; i-- > 0;)
+    setup_steps[i].down(app_rsrc, app_ctx);
+}
+
 int main(void) {
   log_init();
-  int vid = IMATE_VENDOR_ID;
-  int pid = IMATE_PRODUCT_ID;
   app_context app_ctx = {0};
   app_resources app_rsrc = {0};
   int status = 1;
 
   // Set up all the devices and install the polling timer.
-  // If anything fails, then tear down everything it set up.
-  if (!imate_hid_open(vid, pid, &app_rsrc, &app_ctx))
-    return status;
-  if (!imate_usb_open(vid, pid, &app_rsrc, &app_ctx))
-    goto cleanup;
-  if (!install_signal_handlers(&app_rsrc, &app_ctx))
-    goto cleanup;
-  if (!applejack_try_set_extended_mode(&app_rsrc, &app_ctx))
-    goto cleanup;
-  if (!imate_try_setup_autopoll(&app_rsrc, &app_ctx))
-    goto cleanup;
-  if (!setup_timer(&app_rsrc, &app_ctx))
-    goto cleanup;
-
-  if (app_ctx.stop_requested) {
+  // If anything fails, tear down whatever was attempted.
+  if (app_setup(&app_rsrc, &app_ctx)) {
+    if (!app_ctx.stop_requested)
+      CFRunLoopRun();
     status = 0;
-    goto cleanup;
   }
-  CFRunLoopRun();
-  status = 0; // success
-cleanup:
-  if (app_rsrc.timer) {
-    CFRunLoopTimerInvalidate(app_rsrc.timer);
-    CFRelease(app_rsrc.timer);
-  }
-  keyboard_apply(&app_ctx.keyboard, /*buttons =*/0);
-  if (app_rsrc.imate_autopoll_touched &&
-      !imate_set_autopoll(&app_ctx, /* enabled = */ true))
-    fprintf(stderr, "warning: Could not re-enable autopoll on iMate\n");
-  if (app_rsrc.applejack_handler_touched &&
-      !adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
-                       APPLEJACK_HANDLER_DEFAULT))
-    fprintf(stderr,
-            "warning: Pad may still be in extended mode; replug the iMate\n");
-  for (size_t i = CAUGHT_SIGNAL_COUNT; i-- > 0;) {
-    if (!app_rsrc.signal_sources[i])
-      continue;
-    dispatch_source_cancel(app_rsrc.signal_sources[i]);
-    dispatch_release(app_rsrc.signal_sources[i]);
-  }
-  if (app_ctx.lusb_handle)
-    libusb_close(app_ctx.lusb_handle);
-  if (app_rsrc.lusb_ctx)
-    libusb_exit(app_rsrc.lusb_ctx);
-  CFRelease(app_rsrc.hid);
+  app_teardown(&app_rsrc, &app_ctx);
   return status;
 }
