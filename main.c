@@ -728,6 +728,22 @@ static bool install_signal_handlers(app_resources *app_rsrc,
   return true;
 }
 
+/// Set the AppleJack to extended mode.
+/// Returns true on success, false otherwise.
+/// Always sets app_rsrc->applejack_handler_touched.
+static bool applejack_set_extended_mode(app_resources *app_rsrc,
+                                        app_context *app_ctx) {
+  // Even if we fail, we may have communicated with the pad.
+  // Note that.
+  app_rsrc->applejack_handler_touched = true;
+  if (!adb_set_handler(app_ctx, APPLEJACK_ADB_ADDRESS,
+                       APPLEJACK_HANDLER_EXTENDED)) {
+    fprintf(stderr, "error: Could not set pad handler\n");
+    return false;
+  }
+  return true;
+}
+
 int main(void) {
   log_init();
   int vid = IMATE_VENDOR_ID;
@@ -742,14 +758,9 @@ int main(void) {
     goto cleanup;
   if (!install_signal_handlers(&app_rsrc, &app_ctx))
     goto cleanup;
-
-  // Mark that we tried to touch the pad handler so we know to clean up.
-  app_rsrc.applejack_handler_touched = true;
-  if (!adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
-                       APPLEJACK_HANDLER_EXTENDED)) {
-    fprintf(stderr, "error: Could not set pad handler\n");
+  if (!applejack_set_extended_mode(&app_rsrc, &app_ctx))
     goto cleanup;
-  }
+
   // Mark that we tried to set the iMate's autopoll so we know to clean up.
   app_rsrc.imate_autopoll_touched = true;
   if (!imate_set_autopoll(&app_ctx, /* enabled = */ false)) {
