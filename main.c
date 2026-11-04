@@ -236,6 +236,53 @@ static gamepad_edges gamepad_diff(uint16_t prev, uint16_t now) {
   return (gamepad_edges){.pressed = changed & now, .released = changed & prev};
 }
 
+/// Maximum length of pretty printing string for buttons.
+#define BTN_PRETTY_PRINT_MAX 192
+/// Minimum length of pretty printing string for buttons.
+#define BTN_PRETTY_PRINT_MIN 7
+_Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
+               "need to fit '(none)' at the minimum");
+
+/// Change a set of buttons into a human-readable string.
+static bool gamepad_buttons_to_string(char *out_buf, size_t size,
+                                      uint16_t buttons) {
+  // make sure nobody is handing us garbage
+  if (size < BTN_PRETTY_PRINT_MIN || size > BTN_PRETTY_PRINT_MAX || !out_buf)
+    return false;
+  size_t remaining = size;
+  bool button_pressed = false;
+  for (size_t i = 0; i < BTN_IDX_COUNT; ++i) {
+    // if we only have one byte left, we need to write '\0'
+    if (remaining <= 1)
+      break;
+    if (!(buttons & (1U << i)))
+      continue;
+    button_pressed = true;
+    size_t used = size - remaining;
+    const char *name = button_names[i];
+    const char *sep = used > 0 ? ", " : "";
+    int n = name ? snprintf(out_buf + used, remaining, "%s%s", sep, name)
+                 : snprintf(out_buf + used, remaining, "%s(bit %zu)", sep, i);
+    // Formatting error?
+    if (n < 0)
+      break;
+    // Need to truncate?
+    if ((size_t)n >= remaining) {
+      remaining = 1;
+      break;
+    }
+    remaining -= (size_t)n;
+  }
+  // Was anything pressed at all?
+  if (!button_pressed) {
+    // Nothing was pressed, so just output "(none)" to signify that.
+    int n = snprintf(out_buf, size, "(none)");
+    remaining -= (size_t)n;
+  }
+  out_buf[size - remaining] = '\0';
+  return true;
+}
+
 /// Turns a byte from the pad into a raw movement amount.
 static int8_t applejack_motion_delta(uint8_t byte) {
   // bit:   7        6 5 4 3 2 1 0
@@ -250,6 +297,36 @@ static int8_t applejack_motion_delta(uint8_t byte) {
     v -= APPLEJACK_MOTION_RANGE; // sext
   // cast is fine, we're in -64..63
   return (int8_t)v;
+}
+
+/// Validates an iMate reply to Talk R0 and returns a pointer to its
+/// register data, or NULL if the report isn't a complete R0 reply.
+static const uint8_t *applejack_reply_data(const uint8_t *report, CFIndex len) {
+  if (len != IMATE_REPLY_SIZE)
+    return NULL;
+  if (report[IMATE_REPLY_COMMAND_OFFSET] != APPLEJACK_COMMAND_TALK_R0)
+    return NULL;
+  if (report[IMATE_REPLY_PACKET_OFFSET] != IMATE_REPLY_FIRST_PACKET)
+    return NULL;
+  if (report[IMATE_REPLY_LENGTH_OFFSET] !=
+      APPLEJACK_REGISTER_0_SIZE) // single packet
+    return NULL;
+  return report + IMATE_REPLY_DATA_OFFSET;
+}
+
+/// Decode button state from the pad and output it in out_state.
+static void applejack_decode(const uint8_t data[APPLEJACK_REGISTER_0_SIZE],
+                             gamepad_state *out_state) {
+  uint16_t buttons = 0;
+  size_t len = sizeof(button_map) / sizeof(button_map[0]);
+  for (size_t i = 0; i < len; ++i) {
+    const gamepad_button_mapping *m = &button_map[i];
+    if (!(data[m->byte] & m->mask))
+      buttons |= m->button;
+  }
+  out_state->buttons = buttons;
+  out_state->dx = applejack_motion_delta(data[APPLEJACK_MOTION_X_BYTE]);
+  out_state->dy = applejack_motion_delta(data[APPLEJACK_MOTION_Y_BYTE]);
 }
 
 /// Which key each button posts.
@@ -410,81 +487,6 @@ typedef struct app_resources {
 static void on_signal(void *context) {
   ((app_context *)context)->stop_requested = true;
   CFRunLoopStop(CFRunLoopGetMain());
-}
-
-/// Maximum length of pretty printing string for buttons.
-#define BTN_PRETTY_PRINT_MAX 192
-/// Minimum length of pretty printing string for buttons.
-#define BTN_PRETTY_PRINT_MIN 7
-_Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
-               "need to fit '(none)' at the minimum");
-
-/// Change a set of buttons into a human-readable string.
-static bool gamepad_buttons_to_string(char *out_buf, size_t size,
-                                      uint16_t buttons) {
-  // make sure nobody is handing us garbage
-  if (size < BTN_PRETTY_PRINT_MIN || size > BTN_PRETTY_PRINT_MAX || !out_buf)
-    return false;
-  size_t remaining = size;
-  bool button_pressed = false;
-  for (size_t i = 0; i < BTN_IDX_COUNT; ++i) {
-    // if we only have one byte left, we need to write '\0'
-    if (remaining <= 1)
-      break;
-    if (!(buttons & (1U << i)))
-      continue;
-    button_pressed = true;
-    size_t used = size - remaining;
-    const char *name = button_names[i];
-    const char *sep = used > 0 ? ", " : "";
-    int n = name ? snprintf(out_buf + used, remaining, "%s%s", sep, name)
-                 : snprintf(out_buf + used, remaining, "%s(bit %zu)", sep, i);
-    // Formatting error?
-    if (n < 0)
-      break;
-    // Need to truncate?
-    if ((size_t)n >= remaining) {
-      remaining = 1;
-      break;
-    }
-    remaining -= (size_t)n;
-  }
-  // Was anything pressed at all?
-  if (!button_pressed) {
-    // Nothing was pressed, so just output "(none)" to signify that.
-    int n = snprintf(out_buf, size, "(none)");
-    remaining -= (size_t)n;
-  }
-  out_buf[size - remaining] = '\0';
-  return true;
-}
-
-static const uint8_t *applejack_reply_data(const uint8_t *report, CFIndex len) {
-  if (len != IMATE_REPLY_SIZE)
-    return NULL;
-  if (report[IMATE_REPLY_COMMAND_OFFSET] != APPLEJACK_COMMAND_TALK_R0)
-    return NULL;
-  if (report[IMATE_REPLY_PACKET_OFFSET] != IMATE_REPLY_FIRST_PACKET)
-    return NULL;
-  if (report[IMATE_REPLY_LENGTH_OFFSET] !=
-      APPLEJACK_REGISTER_0_SIZE) // single packet
-    return NULL;
-  return report + IMATE_REPLY_DATA_OFFSET;
-}
-
-/// Decode button state from the pad and output it in out_state.
-static void applejack_decode(const uint8_t data[APPLEJACK_REGISTER_0_SIZE],
-                             gamepad_state *out_state) {
-  uint16_t buttons = 0;
-  size_t len = sizeof(button_map) / sizeof(button_map[0]);
-  for (size_t i = 0; i < len; ++i) {
-    const gamepad_button_mapping *m = &button_map[i];
-    if (!(data[m->byte] & m->mask))
-      buttons |= m->button;
-  }
-  out_state->buttons = buttons;
-  out_state->dx = applejack_motion_delta(data[APPLEJACK_MOTION_X_BYTE]);
-  out_state->dy = applejack_motion_delta(data[APPLEJACK_MOTION_Y_BYTE]);
 }
 
 /// Callback that runs every time we get an input report from the attached
