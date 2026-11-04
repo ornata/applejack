@@ -79,7 +79,6 @@ enum imate_usb_protocol {
   IMATE_REQUEST_TYPE = LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_INTERFACE |
                        LIBUSB_ENDPOINT_OUT,
   IMATE_REQUEST_ADB_COMMAND = 0, // bRequest: send an ADB command
-  IMATE_TIMEOUT_MS = 1000,
 
   IMATE_REPLY_SIZE = 8,
   IMATE_REPLY_COMMAND_OFFSET = 0,
@@ -92,6 +91,11 @@ enum imate_usb_protocol {
   IMATE_CONTROL_AUTOPOLL = 4,  // wValue: iMate polling for the bus
   IMATE_AUTOPOLL_OFF = 0x00ff, // wIndex
   IMATE_AUTOPOLL_ON = 0x000a,  // wIndex: poll interval
+};
+
+/// Tuning for the imate, separate from wire format.
+enum imate_tuning {
+  IMATE_TIMEOUT_MS = 1000, // libusb control transfer timeout
 
   // hack: add polling gaps to add minimum waits before sending commands
   // to the iMate. The iMate tends to drop commands that arrive within
