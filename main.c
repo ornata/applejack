@@ -202,6 +202,8 @@ static void trackball_accumulate(trackball_position *pos, int8_t dx,
 static const CGKeyCode button_keycode[BTN_IDX_COUNT] = {KEYMAP(X)};
 #undef X
 
+// Counting fragment: expands to `0 +1 +1 ...`, so it can't be parenthesized.
+// NOLINTNEXTLINE(bugprone-macro-parentheses)
 #define X(id, key) +1
 _Static_assert(0 KEYMAP(X) == BTN_IDX_COUNT, "keymap must list every button");
 #undef X
@@ -212,6 +214,8 @@ typedef struct keyboard_output {
 
 /// Sends a keyboard message saying that the given key was down or up.
 static void key_post(CGKeyCode key, bool down) {
+  // Tidy matches our names against CoreGraphics' virtualKey/keyDown.
+  // NOLINTNEXTLINE(readability-suspicious-call-argument)
   CGEventRef ev = CGEventCreateKeyboardEvent(NULL, key, down);
   if (!ev)
     return;
