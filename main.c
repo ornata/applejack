@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <dispatch/dispatch.h>
 #include <libusb.h>
+#include <math.h>
 #include <os/log.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -355,21 +356,17 @@ static mouse_point mouse_position(void) {
   return (mouse_point){.x = p.x, .y = p.y};
 }
 
+/// Clamp v to [lo, hi].
+static double clamp(double v, double lo, double hi) {
+  return fmin(fmax(v, lo), hi);
+}
+
 /// Update the position p to the next mouse position, clamped to the given
 /// bounds.
 static mouse_point mouse_step(mouse_point p, int sdx, int sdy,
                               mouse_rect bounds) {
-  p.x += (double)sdx;
-  p.y += (double)sdy;
-  // check bounds
-  if (p.x < bounds.x_min)
-    p.x = bounds.x_min;
-  else if (p.x > bounds.x_max)
-    p.x = bounds.x_max;
-  if (p.y < bounds.y_min)
-    p.y = bounds.y_min;
-  else if (p.y > bounds.y_max)
-    p.y = bounds.y_max;
+  p.x = clamp(p.x + (double)sdx, bounds.x_min, bounds.x_max);
+  p.y = clamp(p.y + (double)sdy, bounds.y_min, bounds.y_max);
   return p;
 }
 
