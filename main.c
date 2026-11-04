@@ -791,6 +791,8 @@ int main(void) {
   app_resources app_rsrc = {0};
   int status = 1;
 
+  // Set up all the devices and install the polling timer.
+  // If anything fails, then tear down everything it set up.
   if (!imate_hid_open(vid, pid, &app_rsrc, &app_ctx))
     return status;
   if (!imate_usb_open(vid, pid, &app_rsrc, &app_ctx))
