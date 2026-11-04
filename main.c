@@ -728,11 +728,11 @@ static bool install_signal_handlers(app_resources *app_rsrc,
   return true;
 }
 
-/// Set the AppleJack to extended mode.
+/// Try to set the AppleJack to extended mode.
 /// Returns true on success, false otherwise.
 /// Always sets app_rsrc->applejack_handler_touched.
-static bool applejack_set_extended_mode(app_resources *app_rsrc,
-                                        app_context *app_ctx) {
+static bool applejack_try_set_extended_mode(app_resources *app_rsrc,
+                                            app_context *app_ctx) {
   // Even if we fail, we may have communicated with the pad.
   // Note that.
   app_rsrc->applejack_handler_touched = true;
@@ -771,7 +771,7 @@ int main(void) {
     goto cleanup;
   if (!install_signal_handlers(&app_rsrc, &app_ctx))
     goto cleanup;
-  if (!applejack_set_extended_mode(&app_rsrc, &app_ctx))
+  if (!applejack_try_set_extended_mode(&app_rsrc, &app_ctx))
     goto cleanup;
   if (!imate_try_setup_autopoll(&app_rsrc, &app_ctx))
     goto cleanup;
