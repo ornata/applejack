@@ -14,6 +14,10 @@ This project requires that you have the following:
 - A macbook
 - `libusb`
 
+Hardware wise, this looks like this:
+
+<img width="756" height="1008" alt="IMG_7246" src="https://github.com/user-attachments/assets/8b3a7b6d-9784-40b5-a6a1-e7b1e140f57e" />
+
 After you acquire that combination of things, you can play around with it like so:
 
 ```
