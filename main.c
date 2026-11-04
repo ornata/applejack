@@ -744,6 +744,19 @@ static bool applejack_set_extended_mode(app_resources *app_rsrc,
   return true;
 }
 
+/// Try to set up autopolling on the iMate.
+/// Returns true on success, false otherwise.
+/// Always sets app_rsrc->imate_autopoll_touched.
+static bool imate_try_setup_autopoll(app_resources *app_rsrc,
+                                     app_context *app_ctx) {
+  app_rsrc->imate_autopoll_touched = true;
+  if (!imate_set_autopoll(app_ctx, /* enabled = */ false)) {
+    fprintf(stderr, "error: Could not disable autopoll\n");
+    return false;
+  }
+  return true;
+}
+
 int main(void) {
   log_init();
   int vid = IMATE_VENDOR_ID;
@@ -760,13 +773,9 @@ int main(void) {
     goto cleanup;
   if (!applejack_set_extended_mode(&app_rsrc, &app_ctx))
     goto cleanup;
-
-  // Mark that we tried to set the iMate's autopoll so we know to clean up.
-  app_rsrc.imate_autopoll_touched = true;
-  if (!imate_set_autopoll(&app_ctx, /* enabled = */ false)) {
-    fprintf(stderr, "error: Could not disable autopoll\n");
+  if (!imate_try_setup_autopoll(&app_rsrc, &app_ctx))
     goto cleanup;
-  }
+
   CFRunLoopTimerContext run_timer_ctx = {
       0, &app_ctx, NULL, NULL,
       NULL}; // version, info, retain, release, description
