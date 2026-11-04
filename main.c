@@ -1,3 +1,16 @@
+/*
+ * main.c - Use the AppleJack controller on a modern MacBook
+ * This program allows you to use an AppleJack controller on a modern MacBook,
+ * provided you have
+ *
+ * - A wired AppleJack controller with a P-ADB -> ADB adapter
+ * - An iMate adapter
+ * - An adapter to get the iMate to USB-C
+ *
+ * If you have all of this, then this program will allow you to map the
+ * controller's buttons to keyboard keys, and use the trackball as a mouse.
+ *
+ */
 #include <ApplicationServices/ApplicationServices.h> // CGEvent*, AXIsProcessTrusted
 #include <Carbon/Carbon.h> // kVK_* constants only; nothing to link
 #include <CoreFoundation/CoreFoundation.h> // CFDictionary, CFNumber, CFRunLoop
