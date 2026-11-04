@@ -479,7 +479,7 @@ int main(void) {
   // FIXME: can we avoid this?
   if (geteuid() != 0) {
     fprintf(stderr, "error: run with sudo; macOS gets in our way\n");
-    return 1;
+    return status;
   }
 
   IOHIDManagerRef mgr =
