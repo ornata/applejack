@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
 
 /// USB side of the iMate. Vendor identity, interfaces, etc.
 enum imate_usb_protocol {
@@ -471,6 +472,12 @@ int main(void) {
   CFRunLoopTimerRef timer = NULL;
   int status = 1;
 
+  // FIXME: can we avoid this?
+  if (geteuid() != 0) {
+    fprintf(stderr, "error: run with sudo; macOS gets in our way\n");
+    return 1;
+  }
+
   IOHIDManagerRef mgr =
       IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
   if (!mgr) {
@@ -502,7 +509,8 @@ int main(void) {
   IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(),
                                   kCFRunLoopDefaultMode);
   // Open it and check the result.
-  IOReturn rc = IOHIDManagerOpen(mgr, kIOHIDOptionsTypeNone);
+  // Requires root, so the OS gets out of our way.
+  IOReturn rc = IOHIDManagerOpen(mgr, kIOHIDOptionsTypeSeizeDevice);
   if (rc != kIOReturnSuccess) {
     fprintf(stderr, "error: IOHIDManagerOpen failed: 0x%x\n", rc);
     CFRelease(mgr);
