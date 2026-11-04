@@ -634,8 +634,8 @@ static void applejack_poll(CFRunLoopTimerRef timer, void *info) {
 ///
 /// On failure, returns false and sets app_rsrc->hid to
 /// NULL.
-static bool hid_open(int vid, int pid, app_resources *app_rsrc,
-                     app_context *app_ctx) {
+static bool imate_hid_open(int vid, int pid, app_resources *app_rsrc,
+                           app_context *app_ctx) {
   // FIXME: can we avoid this?
   if (geteuid() != 0) {
     fprintf(stderr, "error: run with sudo; macOS gets in our way\n");
@@ -689,8 +689,8 @@ static bool hid_open(int vid, int pid, app_resources *app_rsrc,
 /// app_ctx->lusb_handle.
 ///
 /// Returns true on success.
-static bool setup_libusb(int vid, int pid, app_resources *app_rsrc,
-                         app_context *app_ctx) {
+static bool imate_usb_open(int vid, int pid, app_resources *app_rsrc,
+                           app_context *app_ctx) {
   if (libusb_init(&app_rsrc->lusb_ctx)) {
     fprintf(stderr, "error: Failed to init libusb\n");
     return false;
@@ -712,9 +712,9 @@ int main(void) {
   app_resources app_rsrc = {0};
   int status = 1;
 
-  if (!hid_open(vid, pid, &app_rsrc, &app_ctx))
+  if (!imate_hid_open(vid, pid, &app_rsrc, &app_ctx))
     return status;
-  if (!setup_libusb(vid, pid, &app_rsrc, &app_ctx))
+  if (!imate_usb_open(vid, pid, &app_rsrc, &app_ctx))
     goto cleanup;
 
   for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
