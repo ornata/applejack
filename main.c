@@ -18,7 +18,8 @@
 #define LOG_CATEGORIES(X)                                                      \
   X(REPORTS, "reports")                                                        \
   X(STATE, "state")                                                            \
-  X(KEYS, "keys")
+  X(KEYS, "keys")                                                              \
+  X(MOUSE, "mouse")
 
 #define X(id, name) LOG_##id,
 enum log_category { LOG_CATEGORIES(X) LOG_COUNT };
@@ -262,6 +263,75 @@ static void keyboard_apply(keyboard_output *out, uint16_t buttons) {
   out->held = buttons;
 }
 
+/// Represents the position of the mouse.
+typedef struct mouse_point {
+  double x;
+  double y;
+} mouse_point;
+
+/// Represents the space in which the mouse may be present.
+typedef struct mouse_rect {
+  double x_min;
+  double x_max;
+  double y_min;
+  double y_max;
+} mouse_rect;
+
+#define MOUSE_GAIN 1
+
+/// Return the bounds for the display.
+/// Note: Assumes one display.
+static mouse_rect mouse_bounds(void) {
+  CGRect r = CGDisplayBounds(CGMainDisplayID());
+  return (mouse_rect){
+      .x_min = CGRectGetMinX(r),
+      .x_max = CGRectGetMaxX(r) - 1, // MaxX is the edge past the last pixel
+      .y_min = CGRectGetMinY(r),
+      .y_max = CGRectGetMaxY(r) - 1,
+  };
+}
+
+/// Get the mouse position on the display.
+static mouse_point mouse_position(void) {
+  CGEventRef ev = CGEventCreate(NULL);
+  CGPoint p = ev ? CGEventGetLocation(ev) : CGPointZero;
+  if (ev)
+    CFRelease(ev);
+  return (mouse_point){.x = p.x, .y = p.y};
+}
+
+/// Update the position p to the next mouse position, clamped to the given
+/// bounds.
+static mouse_point mouse_step(mouse_point p, int sdx, int sdy,
+                              mouse_rect bounds) {
+  p.x += (double)sdx;
+  p.y += (double)sdy;
+  // check bounds
+  if (p.x < bounds.x_min)
+    p.x = bounds.x_min;
+  else if (p.x > bounds.x_max)
+    p.x = bounds.x_max;
+  if (p.y < bounds.y_min)
+    p.y = bounds.y_min;
+  else if (p.y > bounds.y_max)
+    p.y = bounds.y_max;
+  return p;
+}
+
+/// Post a mouse event to the OS, so we can move the mouse.
+static void mouse_post(mouse_point p, int sdx, int sdy) {
+  LOG(LOG_MOUSE, "mouse_point: (%f, %f), scaled dx = %d, scaled dy = %d", p.x,
+      p.y, sdx, sdy);
+  CGEventRef ev = CGEventCreateMouseEvent(
+      NULL, kCGEventMouseMoved, (CGPoint){p.x, p.y}, kCGMouseButtonLeft);
+  if (!ev)
+    return;
+  CGEventSetIntegerValueField(ev, kCGMouseEventDeltaX, sdx);
+  CGEventSetIntegerValueField(ev, kCGMouseEventDeltaY, sdy);
+  CGEventPost(kCGHIDEventTap, ev);
+  CFRelease(ev);
+}
+
 typedef struct app_context {
   libusb_device_handle *lusb_handle;
   gamepad_state state;
@@ -407,6 +477,12 @@ static void on_report(void *context, IOReturn result, void *sender,
     trackball_accumulate(&app_ctx->trackball_pos, dx, dy);
     LOG(LOG_STATE, "gamepad_trackball: dx = %d, dy = %d, pos = (%lld, %lld)",
         dx, dy, app_ctx->trackball_pos.x, app_ctx->trackball_pos.y);
+    mouse_rect bounds = mouse_bounds(); // don't cache in case the display dies
+    mouse_point curr_mouse_pos = mouse_position();
+    int sdx = dx * MOUSE_GAIN;
+    int sdy = dy * MOUSE_GAIN;
+    mouse_point next_mouse_pos = mouse_step(curr_mouse_pos, sdx, sdy, bounds);
+    mouse_post(next_mouse_pos, sdx, sdy);
   }
 }
 
