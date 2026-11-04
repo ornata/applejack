@@ -625,24 +625,27 @@ static void applejack_poll(CFRunLoopTimerRef timer, void *info) {
   }
 }
 
-int main(void) {
-  log_init();
-  int vid = IMATE_VENDOR_ID;
-  int pid = IMATE_PRODUCT_ID;
-  app_context app_ctx = {0};
-  app_resources app_rsrc = {0};
-  int status = 1;
-
+/// Create the HID manager in app_rsrc for the iMate's vendor/product ID.
+/// Requires root.
+///
+/// app_ctx is used for the reporting callback.
+///
+/// Returns true on success.
+///
+/// On failure, returns false and sets app_rsrc->hid to
+/// NULL.
+static bool hid_open(int vid, int pid, app_resources *app_rsrc,
+                     app_context *app_ctx) {
   // FIXME: can we avoid this?
   if (geteuid() != 0) {
     fprintf(stderr, "error: run with sudo; macOS gets in our way\n");
-    return status;
+    return false;
   }
-
-  app_rsrc.hid = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-  if (!app_rsrc.hid) {
+  app_rsrc->hid =
+      IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+  if (!app_rsrc->hid) {
     fprintf(stderr, "error: Couldn't create IOHIDManager; bailing.\n");
-    return status;
+    return false;
   }
   // Build the matching dictionary. This lets us say that we only care about
   // some specific attached device. Otherwise, we match against all devices.
@@ -658,24 +661,38 @@ int main(void) {
       &kCFTypeDictionaryValueCallBacks);
   CFDictionarySetValue(match, CFSTR(kIOHIDVendorIDKey), vid_num);
   CFDictionarySetValue(match, CFSTR(kIOHIDProductIDKey), pid_num);
-  IOHIDManagerSetDeviceMatching(app_rsrc.hid, match);
+  IOHIDManagerSetDeviceMatching(app_rsrc->hid, match);
   // Matching dictionary is set up. Clear the stuff we don't need.
   CFRelease(vid_num);
   CFRelease(pid_num);
   CFRelease(match);
   // Initialize reporting callback and attach it to the current thread.
-  IOHIDManagerRegisterInputReportCallback(app_rsrc.hid, on_report,
-                                          /*context =*/&app_ctx);
-  IOHIDManagerScheduleWithRunLoop(app_rsrc.hid, CFRunLoopGetCurrent(),
+  IOHIDManagerRegisterInputReportCallback(app_rsrc->hid, on_report,
+                                          /*context =*/app_ctx);
+  IOHIDManagerScheduleWithRunLoop(app_rsrc->hid, CFRunLoopGetCurrent(),
                                   kCFRunLoopDefaultMode);
   // Open it and check the result.
   // Requires root, so the OS gets out of our way.
-  IOReturn rc = IOHIDManagerOpen(app_rsrc.hid, kIOHIDOptionsTypeSeizeDevice);
+  IOReturn rc = IOHIDManagerOpen(app_rsrc->hid, kIOHIDOptionsTypeSeizeDevice);
   if (rc != kIOReturnSuccess) {
     fprintf(stderr, "error: IOHIDManagerOpen failed: 0x%x\n", rc);
-    CFRelease(app_rsrc.hid);
-    return status;
+    CFRelease(app_rsrc->hid);
+    app_rsrc->hid = NULL; // avoid dangling ptr
+    return false;
   }
+  return true;
+}
+
+int main(void) {
+  log_init();
+  int vid = IMATE_VENDOR_ID;
+  int pid = IMATE_PRODUCT_ID;
+  app_context app_ctx = {0};
+  app_resources app_rsrc = {0};
+  int status = 1;
+
+  if (!hid_open(vid, pid, &app_rsrc, &app_ctx))
+    return status;
 
   // Open libusb.
   if (libusb_init(&app_rsrc.lusb_ctx)) {
