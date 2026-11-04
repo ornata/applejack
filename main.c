@@ -181,27 +181,6 @@ static int8_t applejack_motion_delta(uint8_t byte) {
   return (int8_t)v;
 }
 
-/// Stores the accumulated position of the controller trackball.
-typedef struct trackball_position {
-  int64_t x;
-  int64_t y;
-} trackball_position;
-
-/// Returns the limit value when adding v to a 64-bit value that overflows.
-static int64_t overflow_limit_64_8(int8_t v) {
-  return v > 0 ? INT64_MAX : INT64_MIN;
-}
-
-/// Add dx and dy to the trackball position.
-/// Saturates on overflow.
-static void trackball_accumulate(trackball_position *pos, int8_t dx,
-                                 int8_t dy) {
-  if (__builtin_add_overflow(pos->x, dx, &pos->x))
-    pos->x = overflow_limit_64_8(dx);
-  if (__builtin_add_overflow(pos->y, dy, &pos->y))
-    pos->y = overflow_limit_64_8(dy);
-}
-
 /// Which key each button posts.
 // clang-format off
 #define KEYMAP(X)                          \
@@ -335,7 +314,6 @@ static void mouse_post(mouse_point p, int sdx, int sdy) {
 typedef struct app_context {
   libusb_device_handle *lusb_handle;
   gamepad_state state;
-  trackball_position trackball_pos;
   uint64_t last_command_ns;
   bool stop_requested;      // e.g. ctrl-c
   keyboard_output keyboard; // keys we've told the OS we're holding
@@ -474,9 +452,7 @@ static void on_report(void *context, IOReturn result, void *sender,
   int8_t dx = app_ctx->state.dx;
   int8_t dy = app_ctx->state.dy;
   if (dx || dy) {
-    trackball_accumulate(&app_ctx->trackball_pos, dx, dy);
-    LOG(LOG_STATE, "gamepad_trackball: dx = %d, dy = %d, pos = (%lld, %lld)",
-        dx, dy, app_ctx->trackball_pos.x, app_ctx->trackball_pos.y);
+    LOG(LOG_STATE, "gamepad_trackball: dx = %d, dy = %d", dx, dy);
     mouse_rect bounds = mouse_bounds(); // don't cache in case the display dies
     mouse_point curr_mouse_pos = mouse_position();
     int sdx = dx * MOUSE_GAIN;
