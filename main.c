@@ -100,9 +100,6 @@ enum imate_usb_protocol {
   IMATE_COMMAND_GAP_MS = 30, // hack: from the vendor firmware
 };
 
-// polling interval in seconds
-#define IMATE_POLL_INTERVAL_S 0.010
-
 /// Generic ADB protocol values.
 ///
 /// ADB command byte (host -> device):
@@ -221,13 +218,6 @@ static const gamepad_button_mapping button_map[] = {GAMEPAD_BUTTONS(X)};
 #define X(id, name, byte, mask) [BTN_IDX_##id] = (name),
 static const char *const button_names[BTN_IDX_COUNT] = {GAMEPAD_BUTTONS(X)};
 #undef X
-
-/// Maximum length of pretty printing string for buttons.
-#define BTN_PRETTY_PRINT_MAX 192
-/// Minimum length of pretty printing string for buttons.
-#define BTN_PRETTY_PRINT_MIN 7
-_Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
-               "need to fit '(none)' at the minimum");
 
 /// Represents which buttons changed between two snapshots.
 typedef struct gamepad_edges {
@@ -417,6 +407,13 @@ static void on_signal(void *context) {
   ((app_context *)context)->stop_requested = true;
   CFRunLoopStop(CFRunLoopGetMain());
 }
+
+/// Maximum length of pretty printing string for buttons.
+#define BTN_PRETTY_PRINT_MAX 192
+/// Minimum length of pretty printing string for buttons.
+#define BTN_PRETTY_PRINT_MIN 7
+_Static_assert(BTN_PRETTY_PRINT_MIN >= sizeof("(none)"),
+               "need to fit '(none)' at the minimum");
 
 /// Change a set of buttons into a human-readable string.
 static bool gamepad_buttons_to_string(char *out_buf, size_t size,
@@ -753,6 +750,9 @@ static bool imate_try_setup_autopoll(app_resources *app_rsrc,
   }
   return true;
 }
+
+// polling interval in seconds
+#define IMATE_POLL_INTERVAL_S 0.010
 
 /// Create the timer that polls the pad and add it to the current run
 /// loop.
