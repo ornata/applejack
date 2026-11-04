@@ -757,6 +757,32 @@ static bool imate_try_setup_autopoll(app_resources *app_rsrc,
   return true;
 }
 
+/// Create the timer that polls the pad and add it to the current run
+/// loop.
+///
+/// Stores the timer in app_rsrc->timer.
+///
+/// app_ctx is the timer callback's context and must outlive it.
+///
+/// Returns true on success.
+static bool setup_timer(app_resources *app_rsrc, app_context *app_ctx) {
+  // version, info, retain, release, description
+  CFRunLoopTimerContext run_timer_ctx = {0, app_ctx, NULL, NULL, NULL};
+  app_rsrc->timer = CFRunLoopTimerCreate(
+      kCFAllocatorDefault,
+      CFAbsoluteTimeGetCurrent() + IMATE_POLL_INTERVAL_S, // first fire
+      IMATE_POLL_INTERVAL_S,                              // repeat interval
+      0, 0,                                               // flags, order
+      applejack_poll, &run_timer_ctx);
+  if (!app_rsrc->timer) {
+    fprintf(stderr, "error: Could not create run loop timer\n");
+    return false;
+  }
+  CFRunLoopAddTimer(CFRunLoopGetCurrent(), app_rsrc->timer,
+                    kCFRunLoopDefaultMode);
+  return true;
+}
+
 int main(void) {
   log_init();
   int vid = IMATE_VENDOR_ID;
@@ -775,22 +801,9 @@ int main(void) {
     goto cleanup;
   if (!imate_try_setup_autopoll(&app_rsrc, &app_ctx))
     goto cleanup;
-
-  CFRunLoopTimerContext run_timer_ctx = {
-      0, &app_ctx, NULL, NULL,
-      NULL}; // version, info, retain, release, description
-  app_rsrc.timer = CFRunLoopTimerCreate(
-      kCFAllocatorDefault,
-      CFAbsoluteTimeGetCurrent() + IMATE_POLL_INTERVAL_S, // first fire
-      IMATE_POLL_INTERVAL_S,                              // repeat interval
-      0, 0,                                               // flags, order
-      applejack_poll, &run_timer_ctx);
-  if (!app_rsrc.timer) {
-    fprintf(stderr, "error: Could not create run loop timer\n");
+  if (!setup_timer(&app_rsrc, &app_ctx))
     goto cleanup;
-  }
-  CFRunLoopAddTimer(CFRunLoopGetCurrent(), app_rsrc.timer,
-                    kCFRunLoopDefaultMode);
+
   if (app_ctx.stop_requested) {
     status = 0;
     goto cleanup;
