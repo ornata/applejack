@@ -210,9 +210,13 @@ typedef struct keyboard_output {
 } keyboard_output;
 
 /// Sends a keyboard message saying that the given key was down or up.
-static void key_post(const keyboard_output *out, CGKeyCode key, bool down) {
-  (void)out; // TODO
+static void key_post(CGKeyCode key, bool down) {
+  CGEventRef ev = CGEventCreateKeyboardEvent(NULL, key, down);
+  if (!ev)
+    return;
   printf("%s %u\n", down ? "down" : "up", key);
+  CGEventPost(kCGHIDEventTap, ev);
+  CFRelease(ev);
 }
 
 /// Determines which keys to press or release based off the passed buttons.
@@ -224,9 +228,9 @@ static void keyboard_apply(keyboard_output *out, uint16_t buttons) {
   // keycode. Then, post that keycode. We'll do this for both presses and
   // releases.
   for (uint16_t m = e.released; m; m &= m - 1)
-    key_post(out, button_keycode[__builtin_ctz(m)], /*down = */ false);
+    key_post(button_keycode[__builtin_ctz(m)], /*down = */ false);
   for (uint16_t m = e.pressed; m; m &= m - 1)
-    key_post(out, button_keycode[__builtin_ctz(m)], /*down = */ true);
+    key_post(button_keycode[__builtin_ctz(m)], /*down = */ true);
   // Store the snapshot so the next call compares against it.
   out->held = buttons;
 }
