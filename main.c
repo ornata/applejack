@@ -33,7 +33,8 @@
   X(REPORTS, "reports")                                                        \
   X(STATE, "state")                                                            \
   X(KEYS, "keys")                                                              \
-  X(MOUSE, "mouse")
+  X(MOUSE, "mouse")                                                            \
+  X(APP_LIFECYCLE, "app_lifecycle")
 
 #define X(id, name) LOG_##id,
 enum log_category { LOG_CATEGORIES(X) LOG_COUNT };
@@ -847,6 +848,9 @@ static void teardown_timer(app_resources *app_rsrc, app_context *app_ctx) {
 /// Each step is something that needs to happen to set up the device/app, along
 /// with its buddy teardown step.
 typedef struct setup_step {
+  /// Name used in logs.
+  const char *name;
+
   /// Function used to set up a resource that must be torn down.
   bool (*up)(app_resources *, app_context *);
 
@@ -857,12 +861,13 @@ typedef struct setup_step {
 /// Setup steps and buddy teardown steps, in order.
 /// Teardown happens in opposite order.
 static const setup_step setup_steps[] = {
-    {imate_hid_open, imate_hid_close},
-    {imate_usb_open, imate_usb_close},
-    {install_signal_handlers, remove_signal_handlers},
-    {applejack_try_set_extended_mode, applejack_restore_default_mode},
-    {imate_try_setup_autopoll, imate_restore_autopoll},
-    {setup_timer, teardown_timer},
+    {"hid", imate_hid_open, imate_hid_close},
+    {"usb", imate_usb_open, imate_usb_close},
+    {"signals", install_signal_handlers, remove_signal_handlers},
+    {"extended mode", applejack_try_set_extended_mode,
+     applejack_restore_default_mode},
+    {"autopoll", imate_try_setup_autopoll, imate_restore_autopoll},
+    {"timer", setup_timer, teardown_timer},
 };
 #define SETUP_STEP_COUNT (sizeof(setup_steps) / sizeof(setup_steps[0]))
 
@@ -875,16 +880,21 @@ static const setup_step setup_steps[] = {
 static bool app_setup(app_resources *app_rsrc, app_context *app_ctx) {
   for (size_t i = 0; i < SETUP_STEP_COUNT; ++i) {
     app_rsrc->setup_steps_attempted = i + 1;
-    if (!setup_steps[i].up(app_rsrc, app_ctx))
+    LOG(LOG_APP_LIFECYCLE, "up %{public}s", setup_steps[i].name);
+    if (!setup_steps[i].up(app_rsrc, app_ctx)) {
+      LOG(LOG_APP_LIFECYCLE, "up %{public}s failed", setup_steps[i].name);
       return false;
+    }
   }
   return true;
 }
 
 /// Undo every setup step that app_setup attempted, newest first.
 static void app_teardown(app_resources *app_rsrc, app_context *app_ctx) {
-  for (size_t i = app_rsrc->setup_steps_attempted; i-- > 0;)
+  for (size_t i = app_rsrc->setup_steps_attempted; i-- > 0;) {
+    LOG(LOG_APP_LIFECYCLE, "down %{public}s", setup_steps[i].name);
     setup_steps[i].down(app_rsrc, app_ctx);
+  }
 }
 
 int main(void) {
