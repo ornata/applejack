@@ -387,6 +387,7 @@ static void mouse_post(mouse_point p, int sdx, int sdy) {
   CFRelease(ev);
 }
 
+/// Holds runtime state read by callbacks as the program is running.
 typedef struct app_context {
   libusb_device_handle *lusb_handle;
   gamepad_state state;
@@ -398,6 +399,18 @@ typedef struct app_context {
 /// Signals to handle, so we don't end up with a stuck pad.
 static const int caught_signals[] = {SIGINT, SIGTERM, SIGHUP};
 #define CAUGHT_SIGNAL_COUNT (sizeof(caught_signals) / sizeof(caught_signals[0]))
+
+/// Holds owned handles that need to be cleaned up.
+typedef struct app_resources {
+  IOHIDManagerRef hid;
+  libusb_context *lusb_ctx;
+  dispatch_source_t signal_sources[CAUGHT_SIGNAL_COUNT];
+  CFRunLoopTimerRef timer;
+  // True if we tried to update the applejack handler.
+  bool applejack_handler_touched;
+  // True if we tried to update the iMate's autopoll.
+  bool imate_autopoll_touched;
+} app_resources;
 
 /// Stops the run loop so main can restore the pad.
 static void on_signal(void *context) {
@@ -616,14 +629,8 @@ int main(void) {
   log_init();
   int vid = IMATE_VENDOR_ID;
   int pid = IMATE_PRODUCT_ID;
-
-  libusb_context *lusb_ctx = NULL;
   app_context app_ctx = {0};
-  dispatch_source_t signal_sources[CAUGHT_SIGNAL_COUNT] = {0};
-  bool applejack_handler_touched =
-      false; // True if we tried to set the pad handler
-  bool imate_autopoll_touched = false; // True if we tried to change autopoll
-  CFRunLoopTimerRef timer = NULL;
+  app_resources app_rsrc = {0};
   int status = 1;
 
   // FIXME: can we avoid this?
@@ -632,9 +639,8 @@ int main(void) {
     return status;
   }
 
-  IOHIDManagerRef mgr =
-      IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-  if (!mgr) {
+  app_rsrc.hid = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+  if (!app_rsrc.hid) {
     fprintf(stderr, "error: Couldn't create IOHIDManager; bailing.\n");
     return status;
   }
@@ -652,31 +658,32 @@ int main(void) {
       &kCFTypeDictionaryValueCallBacks);
   CFDictionarySetValue(match, CFSTR(kIOHIDVendorIDKey), vid_num);
   CFDictionarySetValue(match, CFSTR(kIOHIDProductIDKey), pid_num);
-  IOHIDManagerSetDeviceMatching(mgr, match);
+  IOHIDManagerSetDeviceMatching(app_rsrc.hid, match);
   // Matching dictionary is set up. Clear the stuff we don't need.
   CFRelease(vid_num);
   CFRelease(pid_num);
   CFRelease(match);
   // Initialize reporting callback and attach it to the current thread.
-  IOHIDManagerRegisterInputReportCallback(mgr, on_report,
+  IOHIDManagerRegisterInputReportCallback(app_rsrc.hid, on_report,
                                           /*context =*/&app_ctx);
-  IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(),
+  IOHIDManagerScheduleWithRunLoop(app_rsrc.hid, CFRunLoopGetCurrent(),
                                   kCFRunLoopDefaultMode);
   // Open it and check the result.
   // Requires root, so the OS gets out of our way.
-  IOReturn rc = IOHIDManagerOpen(mgr, kIOHIDOptionsTypeSeizeDevice);
+  IOReturn rc = IOHIDManagerOpen(app_rsrc.hid, kIOHIDOptionsTypeSeizeDevice);
   if (rc != kIOReturnSuccess) {
     fprintf(stderr, "error: IOHIDManagerOpen failed: 0x%x\n", rc);
-    CFRelease(mgr);
+    CFRelease(app_rsrc.hid);
     return status;
   }
 
   // Open libusb.
-  if (libusb_init(&lusb_ctx)) {
+  if (libusb_init(&app_rsrc.lusb_ctx)) {
     fprintf(stderr, "error: Failed to init libusb\n");
     goto cleanup;
   }
-  app_ctx.lusb_handle = libusb_open_device_with_vid_pid(lusb_ctx, vid, pid);
+  app_ctx.lusb_handle =
+      libusb_open_device_with_vid_pid(app_rsrc.lusb_ctx, vid, pid);
   if (!app_ctx.lusb_handle) {
     fprintf(stderr, "error: Failed to create libusb device handle\n");
     goto cleanup;
@@ -684,26 +691,26 @@ int main(void) {
   for (size_t i = 0; i < CAUGHT_SIGNAL_COUNT; ++i) {
     // Make sure default action doesn't kill us.
     signal(caught_signals[i], SIG_IGN);
-    signal_sources[i] =
+    app_rsrc.signal_sources[i] =
         dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, caught_signals[i],
                                0, dispatch_get_main_queue());
-    if (!signal_sources[i]) {
+    if (!app_rsrc.signal_sources[i]) {
       fprintf(stderr, "error: Could not create dispatch source for signal\n");
       goto cleanup;
     }
-    dispatch_set_context(signal_sources[i], &app_ctx);
-    dispatch_source_set_event_handler_f(signal_sources[i], on_signal);
-    dispatch_resume(signal_sources[i]);
+    dispatch_set_context(app_rsrc.signal_sources[i], &app_ctx);
+    dispatch_source_set_event_handler_f(app_rsrc.signal_sources[i], on_signal);
+    dispatch_resume(app_rsrc.signal_sources[i]);
   }
   // Mark that we tried to touch the pad handler so we know to clean up.
-  applejack_handler_touched = true;
+  app_rsrc.applejack_handler_touched = true;
   if (!adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
                        APPLEJACK_HANDLER_EXTENDED)) {
     fprintf(stderr, "error: Could not set pad handler\n");
     goto cleanup;
   }
   // Mark that we tried to set the iMate's autopoll so we know to clean up.
-  imate_autopoll_touched = true;
+  app_rsrc.imate_autopoll_touched = true;
   if (!imate_set_autopoll(&app_ctx, /* enabled = */ false)) {
     fprintf(stderr, "error: Could not disable autopoll\n");
     goto cleanup;
@@ -711,17 +718,18 @@ int main(void) {
   CFRunLoopTimerContext run_timer_ctx = {
       0, &app_ctx, NULL, NULL,
       NULL}; // version, info, retain, release, description
-  timer = CFRunLoopTimerCreate(kCFAllocatorDefault,
-                               CFAbsoluteTimeGetCurrent() +
-                                   IMATE_POLL_INTERVAL_S, // first fire
-                               IMATE_POLL_INTERVAL_S,     // repeat interval
-                               0, 0,                      // flags, order
-                               applejack_poll, &run_timer_ctx);
-  if (!timer) {
+  app_rsrc.timer = CFRunLoopTimerCreate(
+      kCFAllocatorDefault,
+      CFAbsoluteTimeGetCurrent() + IMATE_POLL_INTERVAL_S, // first fire
+      IMATE_POLL_INTERVAL_S,                              // repeat interval
+      0, 0,                                               // flags, order
+      applejack_poll, &run_timer_ctx);
+  if (!app_rsrc.timer) {
     fprintf(stderr, "error: Could not create run loop timer\n");
     goto cleanup;
   }
-  CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopDefaultMode);
+  CFRunLoopAddTimer(CFRunLoopGetCurrent(), app_rsrc.timer,
+                    kCFRunLoopDefaultMode);
   if (app_ctx.stop_requested) {
     status = 0;
     goto cleanup;
@@ -729,29 +737,29 @@ int main(void) {
   CFRunLoopRun();
   status = 0; // success
 cleanup:
-  if (timer) {
-    CFRunLoopTimerInvalidate(timer);
-    CFRelease(timer);
+  if (app_rsrc.timer) {
+    CFRunLoopTimerInvalidate(app_rsrc.timer);
+    CFRelease(app_rsrc.timer);
   }
   keyboard_apply(&app_ctx.keyboard, /*buttons =*/0);
-  if (imate_autopoll_touched &&
+  if (app_rsrc.imate_autopoll_touched &&
       !imate_set_autopoll(&app_ctx, /* enabled = */ true))
     fprintf(stderr, "warning: Could not re-enable autopoll on iMate\n");
-  if (applejack_handler_touched &&
+  if (app_rsrc.applejack_handler_touched &&
       !adb_set_handler(&app_ctx, APPLEJACK_ADB_ADDRESS,
                        APPLEJACK_HANDLER_DEFAULT))
     fprintf(stderr,
             "warning: Pad may still be in extended mode; replug the iMate\n");
   for (size_t i = CAUGHT_SIGNAL_COUNT; i-- > 0;) {
-    if (!signal_sources[i])
+    if (!app_rsrc.signal_sources[i])
       continue;
-    dispatch_source_cancel(signal_sources[i]);
-    dispatch_release(signal_sources[i]);
+    dispatch_source_cancel(app_rsrc.signal_sources[i]);
+    dispatch_release(app_rsrc.signal_sources[i]);
   }
   if (app_ctx.lusb_handle)
     libusb_close(app_ctx.lusb_handle);
-  if (lusb_ctx)
-    libusb_exit(lusb_ctx);
-  CFRelease(mgr);
+  if (app_rsrc.lusb_ctx)
+    libusb_exit(app_rsrc.lusb_ctx);
+  CFRelease(app_rsrc.hid);
   return status;
 }
