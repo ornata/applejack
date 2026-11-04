@@ -6,12 +6,34 @@
 #include <assert.h>
 #include <dispatch/dispatch.h>
 #include <libusb.h>
+#include <os/log.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+
+#define LOG_SUBSYSTEM "com.barrelshifter.applejack"
+#define LOG_CATEGORIES(X)                                                      \
+  X(REPORTS, "reports")                                                        \
+  X(STATE, "state")                                                            \
+  X(KEYS, "keys")
+
+#define X(id, name) LOG_##id,
+enum log_category { LOG_CATEGORIES(X) LOG_COUNT };
+#undef X
+
+#define X(id, name) [LOG_##id] = (name),
+static const char *const log_names[LOG_COUNT] = {LOG_CATEGORIES(X)};
+#undef X
+
+static os_log_t logs[LOG_COUNT]; // filled once at startup
+static void log_init(void) {
+  for (size_t i = 0; i < LOG_COUNT; ++i)
+    logs[i] = os_log_create(LOG_SUBSYSTEM, log_names[i]);
+}
+#define LOG(cat, ...) os_log_info(logs[cat], __VA_ARGS__)
 
 /// USB side of the iMate. Vendor identity, interfaces, etc.
 enum imate_usb_protocol {
@@ -219,7 +241,7 @@ static void key_post(CGKeyCode key, bool down) {
   CGEventRef ev = CGEventCreateKeyboardEvent(NULL, key, down);
   if (!ev)
     return;
-  printf("%s %u\n", down ? "down" : "up", key);
+  LOG(LOG_KEYS, "%{public}s %u", down ? "down" : "up", key);
   CGEventPost(kCGHIDEventTap, ev);
   CFRelease(ev);
 }
@@ -363,11 +385,8 @@ static void on_report(void *context, IOReturn result, void *sender,
   }
   if (iface2int != IMATE_INTERFACE_KEYBOARD)
     return;
-  // Print out whatever we got from the device.
-  printf("Interface number: %d, hex: ", iface2int);
-  for (CFIndex i = 0; i < report_length; ++i)
-    printf("%02x ", report[i]);
-  printf("\n");
+  LOG(LOG_REPORTS, "iface %d reply %{public}.*P", iface2int, (int)report_length,
+      report);
   app_context *app_ctx = context;
   // Decode the buttons in the report and print the updated state.
   const uint8_t *data = applejack_reply_data(report, report_length);
@@ -375,17 +394,19 @@ static void on_report(void *context, IOReturn result, void *sender,
     return;
   applejack_decode(data, &app_ctx->state);
   keyboard_apply(&app_ctx->keyboard, app_ctx->state.buttons);
-  char names[BTN_PRETTY_PRINT_MAX];
-  if (gamepad_buttons_to_string(names, sizeof(names), app_ctx->state.buttons))
-    printf("gamepad_buttons: buttons = %s\n", names);
-  else
-    fprintf(stderr, "error: Couldn't compute button name\n");
+  if (os_log_info_enabled(logs[LOG_STATE])) {
+    char names[BTN_PRETTY_PRINT_MAX];
+    if (gamepad_buttons_to_string(names, sizeof(names), app_ctx->state.buttons))
+      LOG(LOG_STATE, "gamepad_buttons: buttons = %{public}s", names);
+    else
+      fprintf(stderr, "gamepad_buttons: Couldn't compute button name\n");
+  }
   int8_t dx = app_ctx->state.dx;
   int8_t dy = app_ctx->state.dy;
   if (dx || dy) {
     trackball_accumulate(&app_ctx->trackball_pos, dx, dy);
-    printf("gamepad_trackball: dx = %d, dy = %d, pos = (%lld, %lld)\n", dx, dy,
-           app_ctx->trackball_pos.x, app_ctx->trackball_pos.y);
+    LOG(LOG_STATE, "gamepad_trackball: dx = %d, dy = %d, pos = (%lld, %lld)",
+        dx, dy, app_ctx->trackball_pos.x, app_ctx->trackball_pos.y);
   }
 }
 
@@ -464,6 +485,7 @@ static void applejack_poll(CFRunLoopTimerRef timer, void *info) {
 }
 
 int main(void) {
+  log_init();
   int vid = IMATE_VENDOR_ID;
   int pid = IMATE_PRODUCT_ID;
 
